@@ -60,7 +60,7 @@ cp server_config.py.simple server_config.py
 ```
 
 Edit `server_config.py` to include your domain and target forwarding IP/Port.
-- Install a proxy server (e.g., SOCKS5, VLESS, VMESS, SSH and etc) on the server machine to forward traffic to the internet.
+- Install a proxy server (e.g., SOCKS5, VLESS, VMESS, SSH, MTProto, OpenVPN TCP and etc) on the server machine to forward traffic to the internet.
 - Configure `FORWARD_IP` and `FORWARD_PORT` in `server_config.py` to point to your proxy server.
 - Configure `DOMAIN` to match the subdomain you set up in your DNS records (e.g., `v.example.com`).
 - After the first run, note the optimal MTU values for download and upload, then set `MAX_UPLOAD_MTU` and `MAX_DOWNLOAD_MTU` in `server_config.py` accordingly. This will significantly speed up subsequent runs.
