@@ -39,9 +39,7 @@ class ARQStream:
         self._write_lock = asyncio.Lock()
         self._snd_lock = asyncio.Lock()
 
-        self._fin_sent = False  # IMPORTANT: ensure FIN is sent once
-
-        self.window_size = 256
+        self.window_size = 600
         self.window_not_full = asyncio.Event()
         self.window_not_full.set()
 
@@ -103,6 +101,9 @@ class ARQStream:
         diff = (sn - self.rcv_nxt) % 65536
         if diff >= 32768:
             await self.enqueue_tx(4, self.stream_id, sn, b"", is_ack=True)
+            return
+
+        if diff > self.window_size:
             return
 
         if sn not in self.rcv_buf:

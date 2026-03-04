@@ -499,11 +499,11 @@ class MasterDnsVPNClient:
 
         return True
 
-    async def _sync_mtu_with_server(self) -> bool:
+    async def _sync_mtu_with_server(self, max_attempts=10) -> bool:
         """Send the synced MTU values to the server for this session."""
         self.logger.info(f"Syncing MTU with server for session {self.session_id}...")
 
-        if self.should_stop.is_set():
+        if self.should_stop.is_set() or max_attempts <= 0:
             return False
 
         selected_conn = self.balancer.get_best_server()
@@ -588,16 +588,16 @@ class MasterDnsVPNClient:
         )
 
         await self._sleep(0.2)
-        return await self._sync_mtu_with_server()
+        return await self._sync_mtu_with_server(max_attempts - 1)
 
     # ---------------------------------------------------------
     # Core Loop & Session Setup
     # ---------------------------------------------------------
-    async def _init_session(self) -> bool:
+    async def _init_session(self, max_attempts=10) -> bool:
         """Initialize a new session with the server."""
         self.logger.info("Initializing session ...")
 
-        if self.should_stop.is_set():
+        if self.should_stop.is_set() or max_attempts <= 0:
             return False
 
         selected_conn = self.balancer.get_best_server()
@@ -678,7 +678,7 @@ class MasterDnsVPNClient:
         )
 
         await self._sleep(0.2)
-        return await self._init_session()
+        return await self._init_session(max_attempts - 1)
 
     async def run_client(self, MTU_TEST=False) -> None:
         """Run the MasterDnsVPN Client main logic."""

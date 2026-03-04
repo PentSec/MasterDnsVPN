@@ -78,6 +78,9 @@ class MasterDnsVPNServer:
                 self.logger.info(f"Created new session with ID: {session_id}")
                 return session_id
 
+        self.logger.error("All 255 session slots are full!")
+        return None
+
     async def is_session_valid(self, session_id: int) -> bool:
         """
         Check if a session ID is valid.

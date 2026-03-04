@@ -24,13 +24,18 @@ class PingManager:
 
             if (
                 self.active_connections == 0
-                and self.last_data_activity + 10 < time.time()
+                and self.last_data_activity + 20 < time.time()
             ):
                 continue
 
             idle_time = time.time() - self.last_data_activity
 
-            ping_interval = 2.0 if idle_time >= 5.0 else 0.1
+            if idle_time >= 10.0:
+                ping_interval = 3.0
+            elif idle_time >= 5.0:
+                ping_interval = 1.0
+            else:
+                ping_interval = 0.2
 
             if time.time() - self.last_ping_time < ping_interval:
                 continue
