@@ -896,15 +896,19 @@ class MasterDnsVPNClient:
         self, priority, stream_id, sn, data, is_ack=False, is_fin=False, is_resend=False
     ):
         ptype = Packet_Type.STREAM_DATA
+        effective_priority = 3
+
         if is_ack:
             ptype = Packet_Type.STREAM_DATA_ACK
-        elif is_fin:
-            ptype = Packet_Type.STREAM_FIN
+            effective_priority = 1
+        elif is_fin or priority == 2:
+            effective_priority = 2
         elif is_resend:
             ptype = Packet_Type.STREAM_RESEND
+            effective_priority = 2
 
         await self.outbound_queue.put(
-            (priority, self.loop.time(), ptype, stream_id, sn, data)
+            (effective_priority, self.loop.time(), ptype, stream_id, sn, data)
         )
 
     async def _tx_worker(self):
@@ -1045,9 +1049,10 @@ class MasterDnsVPNClient:
                 self.logger.debug(f"Got data for SID {stream_id} but stream not ready.")
             max_pings = max(15, len(self.active_streams) * 4)
             if self.outbound_queue.qsize() < max_pings:
-                for _ in range(4):
+                pull_count = 8
+                for _ in range(pull_count):
                     await self.outbound_queue.put(
-                        (2, self.loop.time(), Packet_Type.PING, 0, 0, b"PULL")
+                        (1, self.loop.time(), Packet_Type.PING, 0, 0, b"PULL")
                     )
 
         elif ptype == Packet_Type.STREAM_DATA_ACK and stream_id_exists:
@@ -1059,9 +1064,10 @@ class MasterDnsVPNClient:
 
             max_pings = max(15, len(self.active_streams) * 4)
             if self.outbound_queue.qsize() < max_pings:
-                for _ in range(4):
+                pull_count = 8
+                for _ in range(pull_count):
                     await self.outbound_queue.put(
-                        (2, self.loop.time(), Packet_Type.PING, 0, 0, b"PULL")
+                        (1, self.loop.time(), Packet_Type.PING, 0, 0, b"PULL")
                     )
 
         elif ptype == Packet_Type.STREAM_FIN and stream_id_exists:

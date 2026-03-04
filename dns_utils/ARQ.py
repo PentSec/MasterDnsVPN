@@ -102,8 +102,8 @@ class ARQStream:
 
         self.last_activity = time.time()
 
-        diff = (self.rcv_nxt - sn) % 65536
-        if diff < 32768 and sn != self.rcv_nxt:
+        diff = (sn - self.rcv_nxt) % 65536
+        if diff >= 32768:
             await self.enqueue_tx(4, self.stream_id, sn, b"", is_ack=True)
             return
 
