@@ -72,7 +72,8 @@ class MasterDnsVPNServer:
         for session_id in range(1, 256):
             if session_id not in self.sessions:
                 self.sessions[session_id] = {
-                    "last_packet_time": asyncio.get_event_loop().time()
+                    "last_packet_time": asyncio.get_event_loop().time(),
+                    "streams": {},
                 }
                 self.logger.info(f"Created new session with ID: {session_id}")
                 return session_id
@@ -267,7 +268,11 @@ class MasterDnsVPNServer:
         elif packet_type == Packet_Type.STREAM_FIN:
             stream = streams.get(stream_id)
             if stream and stream != "PENDING":
-                await stream.close()
+                await self._clear_session_stream_queue(session_id, stream_id)
+                try:
+                    await stream.close()
+                except Exception as _:
+                    pass
 
         out_queue = session.get("outbound_queue")
         stream_states = session.setdefault("stream_states", {})
@@ -657,9 +662,8 @@ class MasterDnsVPNServer:
         await out_queue.put((priority, time.time(), ptype, stream_id, sn, data))
 
     async def _handle_stream_syn(self, session_id, stream_id):
-        self.sessions[session_id].setdefault("streams", {})
-
         if stream_id in self.sessions[session_id]["streams"]:
+            # Duplicate packet
             await self._server_enqueue_tx(
                 session_id, 2, stream_id, 0, b"", is_syn_ack=True
             )
@@ -714,6 +718,29 @@ class MasterDnsVPNServer:
             self.sessions[session_id]["streams"].pop(stream_id, None)
             await self._server_enqueue_tx(session_id, 2, stream_id, 0, b"", is_fin=True)
 
+    async def _clear_session_stream_queue(self, session_id: int, stream_id: int):
+        session = self.sessions.get(session_id)
+        if not session:
+            return
+
+        out_queue = session.get("outbound_queue")
+        if not out_queue or out_queue.empty():
+            return
+
+        items = []
+        while not out_queue.empty():
+            try:
+                item = out_queue.get_nowait()
+                if item[3] != stream_id or item[2] == Packet_Type.STREAM_FIN:
+                    items.append(item)
+            except asyncio.QueueEmpty:
+                break
+
+        for item in items:
+            await out_queue.put(item)
+
+        self.logger.debug(f"Queue cleared for Session {session_id}, Stream {stream_id}")
+
     async def _server_retransmit_loop(self):
         while not self.should_stop.is_set():
             await asyncio.sleep(0.1)
@@ -724,6 +751,8 @@ class MasterDnsVPNServer:
                     sid for sid, s in streams.items() if s != "PENDING" and s.closed
                 ]
                 for sid in closed_ids:
+                    await self._clear_session_stream_queue(session_id, sid)
+
                     asyncio.create_task(
                         self._server_enqueue_tx(session_id, 2, sid, 0, b"", is_fin=True)
                     )

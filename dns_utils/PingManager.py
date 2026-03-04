@@ -22,7 +22,10 @@ class PingManager:
         while True:
             await asyncio.sleep(0.1)
 
-            if self.active_connections == 0:
+            if (
+                self.active_connections == 0
+                and self.last_data_activity + 10 < time.time()
+            ):
                 continue
 
             idle_time = time.time() - self.last_data_activity
