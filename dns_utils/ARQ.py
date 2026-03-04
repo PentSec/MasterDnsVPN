@@ -9,6 +9,8 @@ import time
 
 
 class ARQStream:
+    _active_tasks = set()
+
     def __init__(
         self,
         stream_id,
@@ -53,6 +55,8 @@ class ARQStream:
         try:
             loop = asyncio.get_running_loop()
             self.io_task = loop.create_task(self._io_loop())
+            ARQStream._active_tasks.add(self.io_task)
+            self.io_task.add_done_callback(ARQStream._active_tasks.discard)
         except RuntimeError:
             self.io_task = None
 
@@ -93,9 +97,15 @@ class ARQStream:
                         self.window_not_full.clear()
 
                 await self.enqueue_tx(3, self.stream_id, sn, raw_data)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Stream {self.stream_id} IO loop error: {e}")
         finally:
             if not self.closed:
-                await self.close(reason="IO Loop Exit")
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.close(reason="IO Loop Exit"))
 
     async def receive_data(self, sn, data):
         if self.closed:

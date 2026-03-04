@@ -522,9 +522,11 @@ class MasterDnsVPNServer:
                     continue
 
                 self.logger.error(f"Socket error: {e}. Exiting DNS request handler.")
+                await asyncio.sleep(0.1)
                 continue
             except Exception as e:
                 self.logger.exception(f"Unexpected error receiving DNS request: {e}")
+                await asyncio.sleep(0.1)
                 continue
             try:
                 task = self.loop.create_task(self._bounded_handle_request(data, addr))
