@@ -741,6 +741,9 @@ class MasterDnsVPNServer:
                     sid for sid, s in streams.items() if s != "PENDING" and s.closed
                 ]
                 for sid in closed_ids:
+                    asyncio.create_task(
+                        self._server_enqueue_tx(session_id, 2, sid, 0, b"", is_fin=True)
+                    )
                     streams.pop(sid, None)
 
                 for stream in list(streams.values()):

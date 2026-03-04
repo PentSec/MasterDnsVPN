@@ -52,7 +52,7 @@ class master_dns_vpn_config:
     # Options:
     #   1       - Random: Randomly select a resolver for each query.
     #   2       - Round Robin: Cycle through resolvers in order.
-    RESOLVER_BALANCING_STRATEGY = 1
+    RESOLVER_BALANCING_STRATEGY = 2
 
     # Maximum size of data packets sent to the server. (default: 512 bytes)
     MAX_UPLOAD_MTU = 512

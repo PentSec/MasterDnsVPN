@@ -1035,8 +1035,9 @@ class MasterDnsVPNClient:
                 await stream_obj.receive_data(sn, data)
             else:
                 self.logger.debug(f"Got data for SID {stream_id} but stream not ready.")
-            if self.outbound_queue.qsize() < 15:
-                for _ in range(2):
+            max_pings = max(15, len(self.active_streams) * 4)
+            if self.outbound_queue.qsize() < max_pings:
+                for _ in range(4):
                     await self.outbound_queue.put(
                         (2, self.loop.time(), Packet_Type.PING, 0, 0, b"PULL")
                     )
@@ -1048,8 +1049,9 @@ class MasterDnsVPNClient:
             else:
                 self.logger.debug(f"Got ACK for SID {stream_id} but stream not ready.")
 
-            if self.outbound_queue.qsize() < 15:
-                for _ in range(2):
+            max_pings = max(15, len(self.active_streams) * 4)
+            if self.outbound_queue.qsize() < max_pings:
+                for _ in range(4):
                     await self.outbound_queue.put(
                         (2, self.loop.time(), Packet_Type.PING, 0, 0, b"PULL")
                     )
@@ -1099,9 +1101,12 @@ class MasterDnsVPNClient:
             ]
 
             for sid in dead_streams:
-                self.logger.info(
-                    f"Stream {sid} is unresponsive. Closing and notifying server."
-                )
+                s = self.active_streams.get(sid, {})
+                if s.get("status") == "PENDING":
+                    self.logger.warning(f"Stream {sid} handshake timeout. Closing.")
+                else:
+                    self.logger.info(f"Stream {sid} closed locally. Notifying server.")
+
                 try:
                     stream_data = self.active_streams.pop(sid, None)
                     if stream_data:
