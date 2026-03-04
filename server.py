@@ -79,6 +79,9 @@ class MasterDnsVPNServer:
                     "streams": {},
                     "stream_states": {},
                     "outbound_queue": asyncio.PriorityQueue(),
+                    "pending_resends": set(),
+                    "canceled_streams": set(),
+                    "enqueue_seq": 0,
                 }
                 self.logger.info(f"Created new session with ID: {session_id}")
                 return session_id
@@ -321,18 +324,40 @@ class MasterDnsVPNServer:
         if is_duplicate and state.get("last_response"):
             res_ptype, res_stream_id, res_sn, res_data = state["last_response"]
         else:
-            if out_queue and not out_queue.empty():
-                _, _, res_ptype, res_stream_id, res_sn, res_data = (
-                    out_queue.get_nowait()
-                )
-            else:
-                pong_data = f"PONG:{int(time.time()) % 10000}:{random.randint(1000, 9999)}".encode()
-                res_ptype, res_stream_id, res_sn, res_data = (
-                    Packet_Type.PONG,
-                    0,
-                    0,
-                    pong_data,
-                )
+            pong_data = (
+                f"PONG:{int(time.time()) % 10000}:{random.randint(1000, 9999)}".encode()
+            )
+            res_ptype, res_stream_id, res_sn, res_data = (
+                Packet_Type.PONG,
+                0,
+                0,
+                pong_data,
+            )
+
+            if out_queue:
+                while not out_queue.empty():
+                    item = out_queue.get_nowait()
+                    q_ptype, q_stream_id, q_sn = item[3], item[4], item[5]
+
+                    canceled = session.get("canceled_streams", set())
+                    if q_stream_id in canceled and q_ptype not in (
+                        Packet_Type.STREAM_FIN,
+                        Packet_Type.STREAM_SYN_ACK,
+                    ):
+                        continue
+
+                    if q_ptype == Packet_Type.STREAM_RESEND:
+                        session.get("pending_resends", set()).discard(
+                            (q_stream_id, q_sn)
+                        )
+
+                    res_ptype, res_stream_id, res_sn, res_data = (
+                        q_ptype,
+                        q_stream_id,
+                        q_sn,
+                        item[6],
+                    )
+                    break
 
             if is_stream_active:
                 state["last_sn"] = sn
@@ -696,9 +721,10 @@ class MasterDnsVPNServer:
         if session_id not in self.sessions:
             return
 
-        out_queue = self.sessions[session_id].setdefault(
-            "outbound_queue", asyncio.PriorityQueue()
-        )
+        session = self.sessions[session_id]
+        out_queue = session.setdefault("outbound_queue", asyncio.PriorityQueue())
+        pending_resends = session.setdefault("pending_resends", set())
+
         ptype = Packet_Type.STREAM_DATA
         effective_priority = priority
 
@@ -715,8 +741,17 @@ class MasterDnsVPNServer:
             ptype = Packet_Type.STREAM_RESEND
             effective_priority = 1
 
+        if is_resend:
+            resend_key = (stream_id, sn)
+            if resend_key in pending_resends:
+                return
+            pending_resends.add(resend_key)
+
+        session["enqueue_seq"] = (session.get("enqueue_seq", 0) + 1) & 0x7FFFFFFF
+        seq = session["enqueue_seq"]
+
         await out_queue.put(
-            (effective_priority, time.time(), ptype, stream_id, sn, data)
+            (effective_priority, seq, time.time(), ptype, stream_id, sn, data)
         )
 
     async def _handle_stream_syn(self, session_id, stream_id):
@@ -728,6 +763,7 @@ class MasterDnsVPNServer:
             return
 
         self.sessions[session_id]["streams"][stream_id] = "PENDING"
+        self.sessions[session_id]["canceled_streams"].discard(stream_id)
 
         try:
             reader, writer = await asyncio.open_connection(
@@ -782,31 +818,19 @@ class MasterDnsVPNServer:
             )
 
     async def _clear_session_stream_queue(self, session_id: int, stream_id: int):
+
         session = self.sessions.get(session_id)
         if not session:
             return
 
-        out_queue = session.get("outbound_queue")
-        if not out_queue or out_queue.empty():
-            return
-
-        items = []
-        while not out_queue.empty():
-            try:
-                item = out_queue.get_nowait()
-                if item[3] != stream_id or item[2] == Packet_Type.STREAM_FIN:
-                    items.append(item)
-            except asyncio.QueueEmpty:
-                break
-
-        for item in items:
-            await out_queue.put(item)
-
-        self.logger.debug(f"Queue cleared for Session {session_id}, Stream {stream_id}")
+        session.setdefault("canceled_streams", set()).add(stream_id)
+        self.logger.debug(
+            f"Stream {stream_id} marked as canceled in queue for Session {session_id}"
+        )
 
     async def _server_retransmit_loop(self):
         while not self.should_stop.is_set():
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.5)
             for session_id, session in list(self.sessions.items()):
                 streams = session.get("streams", {})
                 if not streams:

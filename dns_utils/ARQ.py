@@ -124,15 +124,22 @@ class ARQStream:
         if sn not in self.rcv_buf:
             self.rcv_buf[sn] = data
 
+        has_written = False
         while self.rcv_nxt in self.rcv_buf:
             ordered_data = self.rcv_buf.pop(self.rcv_nxt)
             try:
                 self.writer.write(ordered_data)
-                await self.writer.drain()
+                has_written = True
             except Exception as e:
                 await self.close(reason=f"Writer Error: {e}")
                 return
             self.rcv_nxt = (self.rcv_nxt + 1) % 65536
+
+        if has_written:
+            try:
+                await self.writer.drain()
+            except Exception:
+                pass
 
         # ack last received sn
         await self.enqueue_tx(0, self.stream_id, sn, b"", is_ack=True)
@@ -153,22 +160,20 @@ class ARQStream:
 
         now = time.time()
 
-        if now - self.last_activity > 120:
+        if now - self.last_activity > 300:
             await self.close(reason="Inactivity Timeout")
             return
 
+        items_to_resend = []
         async with self._snd_lock:
-            items = list(self.snd_buf.items())
+            for sn, info in self.snd_buf.items():
+                if now - info["time"] >= self.rto:
+                    items_to_resend.append((sn, info["data"]))
+                    info["time"] = now
+                    info["retries"] += 1
 
-        for sn, info in items:
-            if now - info["time"] < self.rto:
-                continue
-
-            await self.enqueue_tx(3, self.stream_id, sn, info["data"], is_resend=True)
-            async with self._snd_lock:
-                if sn in self.snd_buf:
-                    self.snd_buf[sn]["time"] = now
-                    self.snd_buf[sn]["retries"] += 1
+        for sn, data in items_to_resend:
+            await self.enqueue_tx(1, self.stream_id, sn, data, is_resend=True)
 
     async def close(self, reason="Unknown"):
         if self.closed:

@@ -93,6 +93,7 @@ class MasterDnsVPNClient:
             resolvers=self.connections_map, strategy=self.resolver_balancing_strategy
         )
         self.ping_manager = PingManager(self._send_ping_packet)
+        self._enqueue_seq = 0
 
         self.logger.debug("<magenta>[INIT]</magenta> MasterDnsVPNClient initialized.")
 
@@ -167,8 +168,11 @@ class MasterDnsVPNClient:
         if not hasattr(self, "outbound_queue") or self.outbound_queue is None:
             return
 
+        # outbound_queue items layout: (priority, seq, time, ptype, stream_id, sn, data)
         ping_count = sum(
-            1 for item in self.outbound_queue._queue if item[2] == Packet_Type.PING
+            1
+            for item in self.outbound_queue._queue
+            if len(item) > 3 and item[3] == Packet_Type.PING
         )
 
         if ping_count >= 5:
@@ -178,8 +182,17 @@ class MasterDnsVPNClient:
             payload = f"P{int(time.time() % 60)}R{random.randint(100, 999)}".encode()
 
         try:
+            self._enqueue_seq = (getattr(self, "_enqueue_seq", 0) + 1) & 0x7FFFFFFF
             self.outbound_queue.put_nowait(
-                (4, self.loop.time(), Packet_Type.PING, 0, 0, payload)
+                (
+                    4,
+                    self._enqueue_seq,
+                    self.loop.time(),
+                    Packet_Type.PING,
+                    0,
+                    0,
+                    payload,
+                )
             )
         except asyncio.QueueFull:
             pass
@@ -779,10 +792,10 @@ class MasterDnsVPNClient:
         """Start local TCP server and main worker tasks."""
         self.logger.info("Entering VPN Tunnel Main Loop...")
         self.session_restart_event = asyncio.Event()
-        self.outbound_queue = asyncio.PriorityQueue(
-            maxsize=self.config.get("OUTBOUND_QUEUE_MAX", 5000)
-        )
+        self.outbound_queue = asyncio.PriorityQueue()
         self.active_streams = {}
+        self.pending_resends = set()
+        self.canceled_streams = set()
 
         self.tunnel_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -943,6 +956,8 @@ class MasterDnsVPNClient:
 
             if stream_id not in self.active_streams:
                 self.last_stream_id = stream_id
+                if hasattr(self, "canceled_streams"):
+                    self.canceled_streams.discard(stream_id)
                 return True, stream_id
 
             stream_id += 1
@@ -970,7 +985,15 @@ class MasterDnsVPNClient:
                 f"PONG:{int(time.time()) % 10000}:{random.randint(1000, 9999)}".encode()
             )
             self.outbound_queue.put_nowait(
-                (0, now, Packet_Type.STREAM_SYN, stream_id, 0, syn_data)
+                (
+                    0,
+                    0,
+                    now,
+                    Packet_Type.STREAM_SYN,
+                    stream_id,
+                    0,
+                    syn_data,
+                )
             )
         except asyncio.QueueFull:
             self.logger.debug("Queue is full, dropping new connection.")
@@ -988,6 +1011,10 @@ class MasterDnsVPNClient:
 
     async def _clear_stream_from_queue(self, stream_id: int):
         """Removes all packets of a specific stream from the outbound queue except FIN."""
+        if hasattr(self, "canceled_streams"):
+            self.canceled_streams.add(stream_id)
+            self.logger.debug(f"Stream {stream_id} marked as canceled in queue.")
+
         if not hasattr(self, "outbound_queue") or self.outbound_queue.empty():
             return
 
@@ -995,7 +1022,7 @@ class MasterDnsVPNClient:
         while not self.outbound_queue.empty():
             try:
                 item = self.outbound_queue.get_nowait()
-                if item[3] != stream_id or item[2] == Packet_Type.STREAM_FIN:
+                if item[4] != stream_id or item[3] == Packet_Type.STREAM_FIN:
                     items.append(item)
             except asyncio.QueueEmpty:
                 break
@@ -1017,7 +1044,7 @@ class MasterDnsVPNClient:
             return
 
         ptype = Packet_Type.STREAM_DATA
-        effective_priority = 3
+        effective_priority = priority
 
         if is_ack:
             ptype = Packet_Type.STREAM_DATA_ACK
@@ -1025,13 +1052,28 @@ class MasterDnsVPNClient:
         elif is_fin:
             ptype = Packet_Type.STREAM_FIN
             effective_priority = 0
-        elif is_resend or priority <= 2:
-            ptype = Packet_Type.STREAM_RESEND if is_resend else ptype
+        elif is_resend:
+            ptype = Packet_Type.STREAM_RESEND
             effective_priority = 1
 
+        if is_resend:
+            resend_key = (stream_id, sn)
+            if resend_key in self.pending_resends:
+                return
+            self.pending_resends.add(resend_key)
+
         try:
+            self._enqueue_seq = (getattr(self, "_enqueue_seq", 0) + 1) & 0x7FFFFFFF
             self.outbound_queue.put_nowait(
-                (effective_priority, self.loop.time(), ptype, stream_id, sn, data)
+                (
+                    effective_priority,
+                    self._enqueue_seq,
+                    self.loop.time(),
+                    ptype,
+                    stream_id,
+                    sn,
+                    data,
+                )
             )
         except asyncio.QueueFull:
             pass
@@ -1041,6 +1083,18 @@ class MasterDnsVPNClient:
         while not self.should_stop.is_set() and not self.session_restart_event.is_set():
             try:
                 item = await asyncio.wait_for(self.outbound_queue.get(), timeout=0.2)
+
+                q_ptype, q_stream_id, q_sn = item[3], item[4], item[5]
+
+                if q_stream_id in getattr(
+                    self, "canceled_streams", set()
+                ) and q_ptype not in (Packet_Type.STREAM_FIN, Packet_Type.STREAM_SYN):
+                    self.outbound_queue.task_done()
+                    continue
+
+                if q_ptype == Packet_Type.STREAM_RESEND:
+                    getattr(self, "pending_resends", set()).discard((q_stream_id, q_sn))
+
                 await self._send_single_packet(item)
                 self.outbound_queue.task_done()
             except asyncio.TimeoutError:
@@ -1051,7 +1105,7 @@ class MasterDnsVPNClient:
     async def _send_single_packet(self, item):
         self.ping_manager.active_connections = len(self.active_streams)
 
-        priority, _, pkt_type, stream_id, sn, data = item
+        priority, rr_count, _, pkt_type, stream_id, sn, data = item
 
         self.ping_manager.update_activity()
 
@@ -1092,12 +1146,21 @@ class MasterDnsVPNClient:
                     return
 
                 for query_packet in query_packets:
-                    await async_sendto(
-                        self.loop,
-                        self.tunnel_sock,
-                        query_packet,
-                        (conn["resolver"], 53),
-                    )
+                    try:
+                        await async_sendto(
+                            self.loop,
+                            self.tunnel_sock,
+                            query_packet,
+                            (conn["resolver"], 53),
+                        )
+                    except Exception as e:
+                        self.logger.debug(
+                            f"Failed async_sendto to {conn['resolver']}: {e}"
+                        )
+                        try:
+                            await asyncio.sleep(0.001)
+                        except Exception:
+                            pass
         except Exception as e:
             self.logger.debug(f"TX Worker error during packet building/sending: {e}")
 
@@ -1229,7 +1292,7 @@ class MasterDnsVPNClient:
     async def _retransmit_worker(self):
         self.logger.debug("<magenta>[RETRANS]</magenta> Retransmit Worker started.")
         while not self.should_stop.is_set() and not self.session_restart_event.is_set():
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.5)
 
             dead_streams = [
                 sid
@@ -1243,7 +1306,7 @@ class MasterDnsVPNClient:
                     )
                     or (
                         s.get("status") == "PENDING"
-                        and self.loop.time() - s.get("create_time", 0) > 90.0
+                        and self.loop.time() - s.get("create_time", 0) > 350.0
                     )
                 )
             ]
@@ -1252,7 +1315,7 @@ class MasterDnsVPNClient:
                 s = self.active_streams.get(sid, {})
                 if (
                     s.get("status") == "PENDING"
-                    and self.loop.time() - s.get("create_time", 0) > 30.0
+                    and self.loop.time() - s.get("create_time", 0) > 350.0
                 ):
                     reason = "Handshake timeout (No SYN_ACK from server)"
                 else:
