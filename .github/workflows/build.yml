@@ -321,9 +321,11 @@ jobs:
       - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v1
         with:
-          files: release_assets/**
-          tag_name: ${{ steps.get_short_sha.outputs.short_sha }}-${{ steps.get_timestamp.outputs.ts }}
+          files: |
+            release_assets/**/*.zip
+            release_assets/**/*.tar.gz
+          tag_name: v${{ steps.get_short_sha.outputs.short_sha }}-${{ steps.get_timestamp.outputs.ts }}
           name: Release-${{ steps.get_short_sha.outputs.short_sha }}-${{ steps.get_timestamp.outputs.ts }}
-          body: ${{ steps.create_release.outputs.body }}
+          body: ${{ fromJson(steps.create_release.outputs.result).body }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
