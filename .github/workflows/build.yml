@@ -301,7 +301,7 @@ jobs:
       - name: Get timestamp for tag
         id: get_timestamp
         run: |
-          echo "ts=$(date -u +%Y%m%dT%H%M%SZ)" >> $GITHUB_OUTPUT
+          echo "ts=$(date -u +%Y.%m.%d.%H%M%S)" >> $GITHUB_OUTPUT
 
       - name: Debug release assets and planned tag
         run: |
@@ -325,8 +325,8 @@ jobs:
           files: |
             release_assets/**/*.zip
             release_assets/**/*.tar.gz
-          tag_name: ${{ steps.get_timestamp.outputs.ts }}-v${{ steps.get_short_sha.outputs.short_sha }}
-          name: Release-${{ steps.get_timestamp.outputs.ts }}-v${{ steps.get_short_sha.outputs.short_sha }}
+          tag_name: v${{ steps.get_timestamp.outputs.ts }}-${{ steps.get_short_sha.outputs.short_sha }}
+          name: Release v${{ steps.get_timestamp.outputs.ts }} (${{ steps.get_short_sha.outputs.short_sha }})
           body: ${{ fromJson(steps.create_release.outputs.result).body }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
