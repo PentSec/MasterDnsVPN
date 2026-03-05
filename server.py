@@ -281,6 +281,9 @@ class MasterDnsVPNServer:
             )
             return response_packet
 
+        if not extracted_header:
+            extracted_header = {}
+
         stream_id = extracted_header.get("stream_id", 0)
         sn = extracted_header.get("sequence_num", 0)
         session = self.sessions[session_id]
@@ -288,7 +291,6 @@ class MasterDnsVPNServer:
 
         if packet_type == Packet_Type.STREAM_SYN:
             await self._handle_stream_syn(session_id, stream_id)
-
         elif packet_type in (Packet_Type.STREAM_DATA, Packet_Type.STREAM_RESEND):
             stream = streams.get(stream_id)
             if stream and stream != "PENDING":
@@ -303,42 +305,22 @@ class MasterDnsVPNServer:
                     )
                     if extracted_data:
                         await stream.receive_data(sn, extracted_data)
-
         elif packet_type == Packet_Type.STREAM_DATA_ACK:
             stream = streams.get(stream_id)
             if stream and stream != "PENDING":
                 await stream.receive_ack(sn)
-
         elif packet_type == Packet_Type.STREAM_FIN:
             await self.close_stream(session_id, stream_id, reason="Client sent FIN")
 
         out_queue = session.get("outbound_queue")
-        stream_states = session.setdefault("stream_states", {})
 
-        state = {}
-        is_duplicate = False
-        is_stream_active = stream_id != 0 and stream_id in session.get("streams", {})
+        res_data = None
+        res_stream_id = 0
+        res_sn = 0
+        res_ptype = Packet_Type.PONG
 
-        if is_stream_active:
-            state = stream_states.setdefault(stream_id, {})
-            is_duplicate = (
-                state.get("last_sn") == sn and state.get("last_ptype") == packet_type
-            )
-
-        if is_duplicate and state.get("last_response"):
-            res_ptype, res_stream_id, res_sn, res_data = state["last_response"]
-        else:
-            pong_data = (
-                f"PONG:{int(time.time()) % 10000}:{random.randint(1000, 9999)}".encode()
-            )
-            res_ptype, res_stream_id, res_sn, res_data = (
-                Packet_Type.PONG,
-                0,
-                0,
-                pong_data,
-            )
-
-            if out_queue:
+        if out_queue:
+            try:
                 while not out_queue.empty():
                     item = out_queue.get_nowait()
                     q_ptype, q_stream_id, q_sn = item[3], item[4], item[5]
@@ -362,11 +344,19 @@ class MasterDnsVPNServer:
                         item[6],
                     )
                     break
+            except Exception:
+                pass
 
-            if is_stream_active:
-                state["last_sn"] = sn
-                state["last_ptype"] = packet_type
-                state["last_response"] = (res_ptype, res_stream_id, res_sn, res_data)
+        if not res_data:
+            pong_data = (
+                f"PONG:{int(time.time()) % 10000}:{random.randint(1000, 9999)}".encode()
+            )
+            res_ptype, res_stream_id, res_sn, res_data = (
+                Packet_Type.PONG,
+                0,
+                0,
+                pong_data,
+            )
 
         res_encrypted_data = (
             self.dns_parser.codec_transform(res_data, encrypt=True) if res_data else b""

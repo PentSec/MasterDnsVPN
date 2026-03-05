@@ -98,12 +98,12 @@ LISTEN_IP = "127.0.0.1"
 LISTEN_PORT = 1080
 
 # Number of concurrent DNS worker tasks.
-# Increase for high-traffic clients; start with 4 and adjust as needed.
-NUM_DNS_WORKERS = 4
+# Increase for high-traffic clients; start with 2 and adjust as needed.
+NUM_DNS_WORKERS = 2
 
 # Number of times each packet is duplicated before sending.
 # 1 = no duplication; higher values improve reliability at the cost of bandwidth.
-PACKET_DUPLICATION_COUNT = 3
+PACKET_DUPLICATION_COUNT = 2
 
 # ---------------------------------------------------------------------------
 # ARQ (Automatic Repeat reQuest) Settings

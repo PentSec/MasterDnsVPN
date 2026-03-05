@@ -106,7 +106,7 @@ class DnsPacketParser:
 
             return questions, offset
         except Exception as e:
-            self.logger.error(f"Failed to parse DNS question: {e}")
+            self.logger.debug(f"Failed to parse DNS question: {e}")
             return None, offset
 
     async def _parse_resource_records_section(
@@ -805,7 +805,7 @@ class DnsPacketParser:
                 return ""
             txt_length = rData[0]
             txt_data = rData[1 : 1 + txt_length]
-            return txt_data.decode("utf-8")
+            return txt_data.decode("utf-8", errors="ignore")
         except Exception as e:
             self.logger.error(f"Failed to extract TXT from rData: {e}")
             return ""
