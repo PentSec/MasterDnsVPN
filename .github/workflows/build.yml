@@ -325,8 +325,8 @@ jobs:
           files: |
             release_assets/**/*.zip
             release_assets/**/*.tar.gz
-          tag_name: v${{ steps.get_short_sha.outputs.short_sha }}-${{ steps.get_timestamp.outputs.ts }}
-          name: Release-${{ steps.get_short_sha.outputs.short_sha }}-${{ steps.get_timestamp.outputs.ts }}
+          tag_name: ${{ steps.get_timestamp.outputs.ts }}-v${{ steps.get_short_sha.outputs.short_sha }}
+          name: Release-${{ steps.get_timestamp.outputs.ts }}-v${{ steps.get_short_sha.outputs.short_sha }}
           body: ${{ fromJson(steps.create_release.outputs.result).body }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
