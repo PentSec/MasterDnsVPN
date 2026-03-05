@@ -236,6 +236,7 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
+            const core = require('@actions/core');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const head = process.env.GITHUB_SHA;
@@ -310,9 +311,18 @@ jobs:
             // create release with short tag from earlier step
             const shortTag = '${{ steps.get_short_sha.outputs.short_sha }}';
             const rel = await github.rest.repos.createRelease({ owner, repo, tag_name: shortTag, name: `Release-${shortTag}`, body, draft: false, prerelease: false });
+            core.setOutput('upload_url', rel.data.upload_url);
+            console.log('Created release upload_url=' + rel.data.upload_url);
+            // also return for compatibility
             return { upload_url: rel.data.upload_url };
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Debug release upload URL and assets
+        run: |
+          echo "Resolved upload_url: '${{ steps.create_release.outputs.upload_url }}'"
+          echo "Contents of release_assets before upload:"
+          find release_assets -maxdepth 3 -print || true
 
       - name: Upload release assets
         env:
