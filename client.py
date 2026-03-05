@@ -194,30 +194,6 @@ class MasterDnsVPNClient:
         except asyncio.QueueFull:
             pass
 
-        if ping_count >= 3:
-            return
-
-        if payload is None:
-            payload = f"P{int(time.time() % 60)}R{random.randint(100, 999)}".encode()
-
-        try:
-            self._enqueue_seq = (getattr(self, "_enqueue_seq", 0) + 1) & 0x7FFFFFFF
-            self.outbound_queue.put_nowait(
-                (
-                    4,
-                    self._enqueue_seq,
-                    self.loop.time(),
-                    Packet_Type.PING,
-                    0,
-                    0,
-                    payload,
-                )
-            )
-        except asyncio.QueueFull:
-            pass
-        except Exception as _:
-            pass
-
     async def _process_received_packet(
         self, response_bytes: bytes, addr=None
     ) -> Tuple[Optional[dict], bytes]:
@@ -1090,12 +1066,19 @@ class MasterDnsVPNClient:
                 stream_id, asyncio.PriorityQueue()
             )
 
-        if stream_id == 0:
-            target_queue = self.session_queue
-        else:
-            target_queue = self.stream_queues.setdefault(
-                stream_id, asyncio.PriorityQueue()
-            )
+        if ptype in (
+            Packet_Type.STREAM_FIN,
+            Packet_Type.STREAM_SYN,
+            Packet_Type.STREAM_SYN_ACK,
+        ):
+            for item in target_queue._queue:
+                if len(item) > 3 and item[3] == ptype:
+                    return
+
+        if ptype == Packet_Type.STREAM_DATA_ACK:
+            for item in target_queue._queue:
+                if len(item) > 5 and item[3] == ptype and item[5] == sn:
+                    return
 
         try:
             self._enqueue_seq = (getattr(self, "_enqueue_seq", 0) + 1) & 0x7FFFFFFF
@@ -1180,10 +1163,6 @@ class MasterDnsVPNClient:
 
         self.ping_manager.update_activity()
 
-        if stream_id != 0 and pkt_type != Packet_Type.STREAM_FIN:
-            if stream_id not in self.active_streams:
-                return
-
         if stream_id in self.active_streams:
             now = self.loop.time()
             self.active_streams[stream_id]["last_activity_time"] = now
@@ -1195,12 +1174,7 @@ class MasterDnsVPNClient:
                 else b""
             )
 
-            if stream_id and stream_id != 0:
-                target_conns = self.balancer.get_servers_for_stream(
-                    stream_id, self.packet_duplication
-                )
-            else:
-                target_conns = self.balancer.get_unique_servers(self.packet_duplication)
+            target_conns = self.balancer.get_unique_servers(self.packet_duplication)
 
             for conn in target_conns:
                 self.balancer.report_send(f"{conn['resolver']}:{conn['domain']}")
@@ -1391,7 +1365,10 @@ class MasterDnsVPNClient:
                 ):
                     reason = "Handshake timeout (No SYN_ACK from server)"
                 else:
-                    reason = "Closed locally or Inactivity Timeout"
+                    arq = s.get("stream")
+                    reason = getattr(
+                        arq, "close_reason", "Closed locally or Inactivity Timeout"
+                    )
 
                 await self.close_stream(sid, reason=reason)
 

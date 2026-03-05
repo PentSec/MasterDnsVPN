@@ -103,6 +103,8 @@ NUM_DNS_WORKERS = 2
 
 # Number of times each packet is duplicated before sending.
 # 1 = no duplication; higher values improve reliability at the cost of bandwidth.
+# Increase this if you experience packet loss, especially on unstable networks.
+# WARNING: Setting this too high can significantly increase bandwidth usage, Land and server load.
 PACKET_DUPLICATION_COUNT = 2
 
 # ---------------------------------------------------------------------------

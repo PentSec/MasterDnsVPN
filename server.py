@@ -784,6 +784,20 @@ class MasterDnsVPNServer:
                 return
             pending_resends.add(resend_key)
 
+        if ptype in (
+            Packet_Type.STREAM_FIN,
+            Packet_Type.STREAM_SYN,
+            Packet_Type.STREAM_SYN_ACK,
+        ):
+            for item in target_queue._queue:
+                if len(item) > 3 and item[3] == ptype:
+                    return
+
+        if ptype == Packet_Type.STREAM_DATA_ACK:
+            for item in target_queue._queue:
+                if len(item) > 5 and item[3] == ptype and item[5] == sn:
+                    return
+
         session["enqueue_seq"] = (session.get("enqueue_seq", 0) + 1) & 0x7FFFFFFF
         seq = session["enqueue_seq"]
 

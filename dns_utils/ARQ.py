@@ -37,6 +37,7 @@ class ARQStream:
         self.last_activity = time.time()
         self.rto = 1.0
         self.closed = False
+        self.close_reason = "Unknown"
         self.logger = logger
         self._fin_sent = False
         self._write_lock = asyncio.Lock()
@@ -71,11 +72,20 @@ class ARQStream:
                     continue
 
                 try:
-                    raw_data = await self.reader.read(self.mtu)
-                except Exception:
+                    raw_data = await asyncio.wait_for(
+                        self.reader.read(self.mtu), timeout=0.5
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                except ConnectionResetError:
+                    self.close_reason = "Local App Reset Connection (Dropped)"
+                    break
+                except Exception as e:
+                    self.close_reason = f"Read Error: {e}"
                     break
 
                 if not raw_data:
+                    self.close_reason = "Local App Closed Connection (EOF)"
                     break
 
                 while len(self.snd_buf) > 200:
@@ -180,6 +190,7 @@ class ARQStream:
             return
 
         self.closed = True
+        self.close_reason = reason
         # self.logger.info(f"Stream {self.stream_id} closing. Reason: {reason}")
 
         if not self._fin_sent:
