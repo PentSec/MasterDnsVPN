@@ -876,7 +876,6 @@ class MasterDnsVPNServer:
             )
 
     async def _clear_session_stream_queue(self, session_id: int, stream_id: int):
-
         session = self.sessions.get(session_id)
         if not session:
             return
@@ -886,10 +885,29 @@ class MasterDnsVPNServer:
             f"Stream {stream_id} marked as canceled in queue for Session {session_id}"
         )
 
+        pending_resends = session.get("pending_resends", set())
+        to_remove = [item for item in pending_resends if item[0] == stream_id]
+        for item in to_remove:
+            pending_resends.discard(item)
+
     async def _server_retransmit_loop(self):
         while not self.should_stop.is_set():
             await asyncio.sleep(0.5)
             for session_id, session in list(self.sessions.items()):
+                stream_queues = session.get("stream_queues", {})
+                canceled = session.get("canceled_streams", set())
+
+                for sid in list(stream_queues.keys()):
+                    if stream_queues[sid].empty() and sid in canceled:
+                        del stream_queues[sid]
+                        canceled.discard(sid)
+
+                to_remove_canceled = [
+                    sid for sid in canceled if sid not in stream_queues
+                ]
+                for sid in to_remove_canceled:
+                    canceled.discard(sid)
+
                 streams = session.get("streams", {})
                 if not streams:
                     continue

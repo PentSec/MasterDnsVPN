@@ -1100,6 +1100,11 @@ class MasterDnsVPNClient:
                 f"Stream {stream_id} marked as canceled. TX worker will skip its pending packets."
             )
 
+        if hasattr(self, "pending_resends"):
+            to_remove = [item for item in self.pending_resends if item[0] == stream_id]
+            for item in to_remove:
+                self.pending_resends.discard(item)
+
     async def _client_enqueue_tx(
         self, priority, stream_id, sn, data, is_ack=False, is_fin=False, is_resend=False
     ):
@@ -1142,8 +1147,7 @@ class MasterDnsVPNClient:
             for item in target_queue._queue:
                 if len(item) > 3 and item[3] == ptype:
                     return
-
-        if ptype == Packet_Type.STREAM_DATA_ACK:
+        elif ptype == Packet_Type.STREAM_DATA_ACK:
             for item in target_queue._queue:
                 if len(item) > 5 and item[3] == ptype and item[5] == sn:
                     return
@@ -1177,6 +1181,20 @@ class MasterDnsVPNClient:
                 continue
 
             item = None
+
+            canceled_streams = getattr(self, "canceled_streams", set())
+
+            for sid in list(self.stream_queues.keys()):
+                if self.stream_queues[sid].empty() and sid in canceled_streams:
+                    del self.stream_queues[sid]
+                    canceled_streams.discard(sid)
+
+            to_remove_canceled = [
+                sid for sid in canceled_streams if sid not in self.stream_queues
+            ]
+            for sid in to_remove_canceled:
+                canceled_streams.discard(sid)
+
             active_streams = [
                 sid for sid, q in self.stream_queues.items() if not q.empty()
             ]
@@ -1212,13 +1230,13 @@ class MasterDnsVPNClient:
             try:
                 q_ptype, q_stream_id, q_sn = item[3], item[4], item[5]
 
+                if q_ptype == Packet_Type.STREAM_RESEND:
+                    getattr(self, "pending_resends", set()).discard((q_stream_id, q_sn))
+
                 if q_stream_id in getattr(
                     self, "canceled_streams", set()
                 ) and q_ptype not in (Packet_Type.STREAM_FIN, Packet_Type.STREAM_SYN):
                     continue
-
-                if q_ptype == Packet_Type.STREAM_RESEND:
-                    getattr(self, "pending_resends", set()).discard((q_stream_id, q_sn))
 
                 if q_ptype in (Packet_Type.STREAM_DATA, Packet_Type.STREAM_RESEND):
                     stream_data = self.active_streams.get(q_stream_id)
