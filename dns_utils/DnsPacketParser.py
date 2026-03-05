@@ -508,7 +508,7 @@ class DnsPacketParser:
         """
         Encrypt data based on the selected method.
         Supported methods:
-            0: None, 1: XOR, 2: ChaCha20, 3: AES-128-CTR, 4: AES-192-CTR, 5: AES-256-CTR
+            0: None, 1: XOR, 2: ChaCha20, 3: AES-128-GCM, 4: AES-192-GCM, 5: AES-256-GCM
         """
         try:
             if key is None:
@@ -558,7 +558,7 @@ class DnsPacketParser:
         """
         Decrypt data based on the selected method.
         Supported methods:
-            0: None, 1: XOR, 2: ChaCha20, 3: AES-128-CTR, 4: AES-192-CTR, 5: AES-256-CTR
+            0: None, 1: XOR, 2: ChaCha20, 3: AES-128-GCM, 4: AES-192-GCM, 5: AES-256-GCM
         """
         try:
             if key is None:

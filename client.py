@@ -1449,11 +1449,14 @@ def main():
         asyncio.set_event_loop(loop)
 
         def custom_exception_handler(loop, context):
-            # msg = context.get("message", "")
-            # if "socket.send() raised exception" in msg:
-            #     return
-            # loop.default_exception_handler(context)
-            return
+            msg = context.get("message", "")
+            if (
+                "socket.send() raised exception" in msg
+                or "Connection reset by peer" in msg
+            ):
+                return
+
+            loop.default_exception_handler(context)
 
         loop.set_exception_handler(custom_exception_handler)
 

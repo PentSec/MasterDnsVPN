@@ -15,7 +15,7 @@ Cuenta con una implementación personalizada de **ARQ (solicitud de repetición 
 
 ## ✨ Características principales
 - 🛡️ **Elusión de censura:** Aprovecha el protocolo DNS para canalizar el tráfico a través de entornos restringidos.
-- 🔐 **Seguridad robusta:** Admite múltiples métodos de cifrado, incluyendo XOR, ChaCha20, AES-128-CTR, AES-192-CTR y AES-256-CTR.
+- 🔐 **Seguridad robusta:** Admite múltiples métodos de cifrado, incluyendo XOR, ChaCha20, AES-128-GCM, AES-192-GCM y AES-256-GCM.
 - ⚙️ **Gestión inteligente de MTU:** Sondea y sincroniza automáticamente la unidad máxima de transmisión (MTU) óptima tanto para carga como para descarga.
 - 🔄 **Protocolo ARQ personalizado:** Soluciona problemas de pérdida de paquetes y entrega desordenada con retransmisión dinámica y control de flujo.
 - ⚡ **Balanceo de carga del solucionador:** Admite múltiples solucionadores DNS con estrategias de balanceo adaptativo (aleatorio, round-robin, mejor pérdida).
@@ -170,7 +170,7 @@ El cliente inicia un proxy SOCKS5 local en `127.0.0.1:1080` (configurable median
 | `UDP_HOST` | `"0.0.0.0"` | IP a la que el servidor DNS/UDP se enlaza. `"0.0.0.0"` = todas las interfaces. |
 | `UDP_PORT` | `53` | Puerto UDP del servidor DNS. El puerto `53` (DNS estándar) requiere privilegios de root/admin. |
 | `DOMAIN` | `["t.example.com"]` | Dominio(s) del túnel que acepta este servidor. Debe coincidir con la lista `DOMAINS` del cliente. |
-| `DATA_ENCRYPTION_METHOD` | `1` | Algoritmo de cifrado. **Debe coincidir con el cliente.** `0`=Ninguno, `1`=XOR, `2`=ChaCha20, `3`=AES-128-CTR, `4`=AES-192-CTR, `5`=AES-256-CTR |
+| `DATA_ENCRYPTION_METHOD` | `1` | Algoritmo de cifrado. **Debe coincidir con el cliente.** `0`=Ninguno, `1`=XOR, `2`=ChaCha20, `3`=AES-128-GCM, `4`=AES-192-GCM, `5`=AES-256-GCM |
 | `SESSION_TIMEOUT` | `300` | Tiempo de inactividad (segundos) antes de que expire una sesión de cliente. |
 | `SESSION_CLEANUP_INTERVAL` | `60` | Intervalo (segundos) para eliminar sesiones expiradas. |
 | `FORWARD_IP` | `"127.0.0.1"` | IP del proxy/servicio local al que se reenvía el tráfico descifrado. |
@@ -189,7 +189,7 @@ El cliente inicia un proxy SOCKS5 local en `127.0.0.1:1080` (configurable median
 | `MAX_DOWNLOAD_MTU` | `200` | Límite superior (bytes) para el sondeo automático de MTU de bajada. |
 | `RESOLVER_BALANCING_STRATEGY` | `1` | Estrategia de balanceo de carga: `1`=Aleatorio, `2`=Round-Robin, `3`=Menor pérdida |
 | `DOMAINS` | `["t.example.com"]` | Dominio(s) del túnel que apuntan al servidor vía registros NS. Agregue múltiples para redundancia multi-ruta. |
-| `DATA_ENCRYPTION_METHOD` | `1` | Algoritmo de cifrado. **Debe coincidir con el servidor.** `0`=Ninguno, `1`=XOR, `2`=ChaCha20, `3`=AES-128-CTR, `4`=AES-192-CTR, `5`=AES-256-CTR |
+| `DATA_ENCRYPTION_METHOD` | `1` | Algoritmo de cifrado. **Debe coincidir con el servidor.** `0`=Ninguno, `1`=XOR, `2`=ChaCha20, `3`=AES-128-GCM, `4`=AES-192-GCM, `5`=AES-256-GCM |
 | `ENCRYPTION_KEY` | `""` | Clave del `encrypt_key.txt` del servidor o del log del primer arranque. Debe coincidir con el servidor. |
 | `DNS_QUERY_TIMEOUT` | `5` | Segundos de espera para una respuesta DNS antes de considerar la consulta fallida. |
 | `LISTEN_IP` | `"127.0.0.1"` | IP local en la que escucha el proxy SOCKS5. |
@@ -197,6 +197,51 @@ El cliente inicia un proxy SOCKS5 local en `127.0.0.1:1080` (configurable median
 | `NUM_DNS_WORKERS` | `4` | Número de tareas async DNS concurrentes. Aumente para mayor tráfico. |
 | `PACKET_DUPLICATION_COUNT` | `3` | Rutas resolver+dominio por las que se envía cada paquete simultáneamente. Mayor = más fiable pero más ancho de banda. |
 | `ARQ_WINDOW_SIZE` | `600` | Tamaño de la ventana ARQ (número de paquetes no reconocidos permitidos en vuelo). Ventanas más grandes pueden mejorar el rendimiento en conexiones de alta latencia pero pueden aumentar el uso de memoria. |
+
+---
+
+## 🛑 Problemas comunes: Puerto 53 en uso (Linux)
+Si recibe un error de "Puerto 53 en uso" al iniciar el servidor, es probable que otro proceso (como `systemd-resolved` o `dnsmasq`) esté utilizando el puerto DNS estándar. Para resolver esto:
+
+- Edite la configuración: `sudo nano /etc/systemd/resolved.conf`
+- Descomente la línea y cambie a: `DNSStubListener=no`
+- Reinicie el servicio: `sudo systemctl restart systemd-resolved`
+
+(Opcional) Actualice **resolv.conf**: `sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf`
+
+---
+
+## ⚙️ Ejecución como servicio en segundo plano (Systemd)
+
+Para entornos de producción, se recomienda ejecutar el servidor como un servicio en segundo plano para que se inicie automáticamente al arrancar el sistema.
+
+- Crear archivo de servicio: `sudo nano /etc/systemd/system/masterdnsvpn.service`
+- Pegue la siguiente configuración (ajuste la ruta `/path/to/`)
+
+```ini
+[Unit]
+Description=MasterDnsVPN Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/MasterDnsVPN
+ExecStart=/usr/bin/python3 server.py
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target
+
+```
+- Guardar y salir. Luego, habilite y inicie el servicio:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable masterdnsvpn
+sudo systemctl start masterdnsvpn
+sudo systemctl status masterdnsvpn
+```
 
 ---
 

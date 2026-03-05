@@ -1028,7 +1028,10 @@ def main():
 
         def custom_exception_handler(loop, context):
             msg = context.get("message", "")
-            if "socket.send() raised exception" in msg:
+            if (
+                "socket.send() raised exception" in msg
+                or "Connection reset by peer" in msg
+            ):
                 return
 
             loop.default_exception_handler(context)

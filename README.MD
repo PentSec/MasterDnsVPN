@@ -15,7 +15,7 @@ It features a custom **ARQ (Automatic Repeat Request)** implementation, ensuring
 
 ## ✨ Key Features
 - 🛡️ **Censorship Circumvention:** Leverages the DNS protocol to tunnel traffic through restricted environments.
-- 🔐 **Robust Security:** Supports multiple encryption methods including XOR, ChaCha20, AES-128-CTR, AES-192-CTR, and AES-256-CTR.
+- 🔐 **Robust Security:** Supports multiple encryption methods including XOR, ChaCha20, AES-128-GCM, AES-192-GCM, and AES-256-GCM.
 - ⚙️ **Smart MTU Management:** Automatically probes and synchronizes the optimal Maximum Transmission Unit (MTU) for both upload and download.
 - 🔄 **Custom ARQ Protocol:** Solves packet loss and out-of-order delivery issues with dynamic retransmission and flow control.
 - ⚡ **Resolver Load Balancing:** Supports multiple DNS resolvers with adaptive balancing strategies (Random, Round-robin, Best-loss).
@@ -170,7 +170,7 @@ The client starts a local SOCKS5 proxy on `127.0.0.1:1080` (configurable via `LI
 | `UDP_HOST` | `"0.0.0.0"` | IP address the DNS/UDP server binds to. `"0.0.0.0"` = all interfaces. |
 | `UDP_PORT` | `53` | UDP port for the DNS server. Port `53` (standard DNS) requires root/admin privileges. |
 | `DOMAIN` | `["t.example.com"]` | Tunnel domain(s) this server accepts. Must match the client's `DOMAINS` list. |
-| `DATA_ENCRYPTION_METHOD` | `1` | Encryption algorithm. **Must match the client.** `0`=None, `1`=XOR, `2`=ChaCha20, `3`=AES-128-CTR, `4`=AES-192-CTR, `5`=AES-256-CTR |
+| `DATA_ENCRYPTION_METHOD` | `1` | Encryption algorithm. **Must match the client.** `0`=None, `1`=XOR, `2`=ChaCha20, `3`=AES-128-GCM, `4`=AES-192-GCM, `5`=AES-256-GCM |
 | `SESSION_TIMEOUT` | `300` | Inactivity time (seconds) before a client session expires. |
 | `SESSION_CLEANUP_INTERVAL` | `60` | Interval (seconds) at which expired sessions are removed. |
 | `FORWARD_IP` | `"127.0.0.1"` | IP of the local proxy/service that decrypted traffic is forwarded to. |
@@ -189,7 +189,7 @@ The client starts a local SOCKS5 proxy on `127.0.0.1:1080` (configurable via `LI
 | `MAX_DOWNLOAD_MTU` | `200` | Upper bound (bytes) for download MTU auto-probing. |
 | `RESOLVER_BALANCING_STRATEGY` | `1` | Load-balancing strategy across resolvers: `1`=Random, `2`=Round-Robin, `3`=Least-Loss |
 | `DOMAINS` | `["t.example.com"]` | Tunnel domain(s) pointing to your server via NS records. Add multiple for multi-path redundancy. |
-| `DATA_ENCRYPTION_METHOD` | `1` | Encryption algorithm. **Must match the server.** `0`=None, `1`=XOR, `2`=ChaCha20, `3`=AES-128-CTR, `4`=AES-192-CTR, `5`=AES-256-CTR |
+| `DATA_ENCRYPTION_METHOD` | `1` | Encryption algorithm. **Must match the server.** `0`=None, `1`=XOR, `2`=ChaCha20, `3`=AES-128-GCM, `4`=AES-192-GCM, `5`=AES-256-GCM |
 | `ENCRYPTION_KEY` | `""` | Key from the server's `encrypt_key.txt` or first-run log. Must match the server. |
 | `DNS_QUERY_TIMEOUT` | `5` | Seconds to wait for a DNS response before considering a query failed. |
 | `LISTEN_IP` | `"127.0.0.1"` | Local IP the SOCKS5 proxy listens on. |
@@ -199,6 +199,50 @@ The client starts a local SOCKS5 proxy on `127.0.0.1:1080` (configurable via `LI
 | `ARQ_WINDOW_SIZE` | `600` | ARQ window size (number of unacknowledged packets allowed in flight). Larger window sizes can improve performance on high-latency connections but may increase memory usage. |
 
 ---
+
+## 🛑 Troubleshooting: Port 53 in use (Linux)
+
+On many Linux distributions (like Ubuntu), port 53 is already used by systemd-resolved. If the server fails to start due to a port conflict, you must disable the default DNS stub listener:
+
+- Edit the config: `sudo nano /etc/systemd/resolved.conf`
+- Uncomment and change to: `DNSStubListener=no`
+- Restart the service: `sudo systemctl restart systemd-resolved`
+
+(Optional) Update **resolv.conf**: `sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf`
+
+---
+
+## ⚙️ Run as a Background Service (Systemd)
+
+For production environments, it is highly recommended to run the server as a background service so it starts automatically on boot.
+
+- Create a service file: `sudo nano /etc/systemd/system/masterdnsvpn.service`
+- Paste the following configuration (adjust the /path/to/ directory)
+
+```ini
+[Unit]
+Description=MasterDnsVPN Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/MasterDnsVPN
+ExecStart=/usr/bin/python3 server.py
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target
+
+```
+- Save and exit. Then enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable masterdnsvpn
+sudo systemctl start masterdnsvpn
+sudo systemctl status masterdnsvpn
+```
 
 ## 🛠️ How It Works
 

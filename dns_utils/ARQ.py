@@ -88,8 +88,9 @@ class ARQStream:
                     self.close_reason = "Local App Closed Connection (EOF)"
                     break
 
-                while len(self.snd_buf) > 200:
-                    await asyncio.sleep(0.1)
+                limit = max(50, int(self.window_size * 0.8))
+                while len(self.snd_buf) > limit:
+                    await asyncio.sleep(0.05)
                     if self.closed:
                         return
 
@@ -175,12 +176,21 @@ class ARQStream:
             return
 
         items_to_resend = []
+        stream_dead = False
         async with self._snd_lock:
             for sn, info in self.snd_buf.items():
                 if now - info["time"] >= self.rto:
+                    if info["retries"] > 40:
+                        stream_dead = True
+                        break
+
                     items_to_resend.append((sn, info["data"]))
                     info["time"] = now
                     info["retries"] += 1
+
+        if stream_dead:
+            await self.close(reason="Max ARQ retries reached (Stream Dead)")
+            return
 
         for sn, data in items_to_resend:
             await self.enqueue_tx(1, self.stream_id, sn, data, is_resend=True)
