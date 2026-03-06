@@ -126,6 +126,7 @@ class MasterDnsVPNServer:
             session_id = self.free_session_ids.popleft()
             now = time.monotonic()
             self.sessions[session_id] = {
+                "created_at": now,
                 "last_packet_time": now,
                 "streams": {},
                 "main_queue": [],
@@ -141,6 +142,7 @@ class MasterDnsVPNServer:
                 "track_ack": set(),
                 "track_resend": set(),
                 "track_types": set(),
+                "track_data": set(),
                 "upload_mtu": 512,
                 "download_mtu": 512,
             }
@@ -405,37 +407,47 @@ class MasterDnsVPNServer:
 
         if packet_type == Packet_Type.STREAM_SYN:
             await self._handle_stream_syn(session_id, stream_id)
+        if packet_type == Packet_Type.STREAM_SYN:
+            await self._handle_stream_syn(session_id, stream_id)
+
         elif packet_type in (Packet_Type.STREAM_DATA, Packet_Type.STREAM_RESEND):
-            stream = streams.get(stream_id)
-            if stream and stream != "PENDING":
-                diff = (sn - stream.rcv_nxt) % 65536
-                if diff >= 32768:
-                    await self._server_enqueue_tx(
-                        session_id, 1, stream_id, sn, b"", is_ack=True
-                    )
-                else:
-                    extracted_data = self.dns_parser.extract_vpn_data_from_labels(
-                        labels
-                    )
-                    if extracted_data:
-                        await stream.receive_data(sn, extracted_data)
+            stream_data = streams.get(stream_id)
+            if stream_data and stream_data.get("status") == "CONNECTED":
+                stream_data["last_activity"] = time.monotonic()
+                arq = stream_data.get("arq_obj")
+
+                if arq:
+                    diff = (sn - arq.rcv_nxt) % 65536
+                    if diff >= 32768:
+                        await self._server_enqueue_tx(
+                            session_id, 1, stream_id, sn, b"", is_ack=True
+                        )
+                    else:
+                        extracted_data = self.dns_parser.extract_vpn_data_from_labels(
+                            labels
+                        )
+                        if extracted_data:
+                            await arq.receive_data(sn, extracted_data)
+
         elif packet_type == Packet_Type.STREAM_DATA_ACK:
-            stream = streams.get(stream_id)
-            if stream and stream != "PENDING":
-                await stream.receive_ack(sn)
+            stream_data = streams.get(stream_id)
+            if stream_data and stream_data.get("status") == "CONNECTED":
+                stream_data["last_activity"] = time.monotonic()
+                arq = stream_data.get("arq_obj")
+                if arq:
+                    await arq.receive_ack(sn)
+
         elif packet_type == Packet_Type.STREAM_FIN:
             await self.close_stream(session_id, stream_id, reason="Client sent FIN")
-
-        session_queue = session.get("session_queue")
-        stream_queues = session.get("stream_queues", {})
-        canceled = session.get("canceled_streams", set())
 
         res_data = None
         res_stream_id = 0
         res_sn = 0
         res_ptype = Packet_Type.PONG
 
-        active_streams = [sid for sid, q in stream_queues.items() if not q.empty()]
+        active_streams = [
+            sid for sid, sdata in streams.items() if sdata.get("tx_queue")
+        ]
 
         if active_streams:
             rr_index = session.get("round_robin_index", 0)
@@ -443,31 +455,37 @@ class MasterDnsVPNServer:
                 rr_index = 0
 
             selected_sid = active_streams[rr_index]
-            target_queue = stream_queues[selected_sid]
+            stream_data = streams[selected_sid]
+            target_queue = stream_data["tx_queue"]
 
             session["round_robin_index"] = (rr_index + 1) % len(active_streams)
 
             try:
-                while not target_queue.empty():
-                    item = target_queue.get_nowait()
+                if target_queue:
+                    item = heapq.heappop(target_queue)
                     q_ptype, q_stream_id, q_sn = item[3], item[4], item[5]
 
-                    if q_stream_id in canceled and q_ptype not in (
-                        Packet_Type.STREAM_FIN,
-                        Packet_Type.STREAM_SYN_ACK,
-                    ):
-                        continue
-
                     if q_ptype == Packet_Type.STREAM_RESEND:
-                        session.get("pending_resends", set()).discard(
-                            (q_stream_id, q_sn)
+                        stream_data["track_resend"].discard(q_sn)
+                        stream_data["count_resend"] = max(
+                            0, stream_data["count_resend"] - 1
                         )
-
-                    if q_ptype in (Packet_Type.STREAM_DATA, Packet_Type.STREAM_RESEND):
-                        arq = session.get("streams", {}).get(q_stream_id)
-                        if arq and arq != "PENDING":
-                            if q_sn not in arq.snd_buf:
-                                continue
+                    elif q_ptype == Packet_Type.STREAM_DATA_ACK:
+                        stream_data["track_ack"].discard(q_sn)
+                        stream_data["count_ack"] = max(0, stream_data["count_ack"] - 1)
+                    elif q_ptype == Packet_Type.STREAM_FIN:
+                        stream_data["track_fin"].discard(q_ptype)
+                        stream_data["count_fin"] = max(0, stream_data["count_fin"] - 1)
+                    elif q_ptype == Packet_Type.STREAM_SYN_ACK:
+                        stream_data["track_syn_ack"].discard(q_ptype)
+                        stream_data["count_syn_ack"] = max(
+                            0, stream_data["count_syn_ack"] - 1
+                        )
+                    elif q_ptype == Packet_Type.STREAM_DATA:
+                        stream_data["track_data"].discard(q_sn)
+                        stream_data["count_data"] = max(
+                            0, stream_data["count_data"] - 1
+                        )
 
                     res_ptype, res_stream_id, res_sn, res_data = (
                         q_ptype,
@@ -475,73 +493,38 @@ class MasterDnsVPNServer:
                         q_sn,
                         item[6],
                     )
-                    # update queue meta to reflect dequeue
-                    try:
-                        qkey = f"stream:{selected_sid}"
-                        qmeta = session.get("queue_meta", {}).get(qkey)
-                        if qmeta:
-                            if q_ptype in (
-                                Packet_Type.STREAM_FIN,
-                                Packet_Type.STREAM_SYN,
-                                Packet_Type.STREAM_SYN_ACK,
-                            ):
-                                qmeta["types"].discard(q_ptype)
-                            if q_ptype == Packet_Type.STREAM_DATA_ACK:
-                                qmeta["acks"].discard((q_ptype, q_sn))
-                            if q_ptype == Packet_Type.STREAM_RESEND:
-                                qmeta["resends"].discard((q_stream_id, q_sn))
-                            # decrement counts
-                            try:
-                                if (
-                                    "counts" in qmeta
-                                    and qmeta["counts"].get(q_ptype, 0) > 0
-                                ):
-                                    qmeta["counts"][q_ptype] -= 1
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    break
             except Exception:
                 pass
 
-        if not res_data and session_queue and not session_queue.empty():
+        main_queue = session.get("main_queue", [])
+        if not res_data and main_queue:
             try:
-                while not session_queue.empty():
-                    item = session_queue.get_nowait()
+                if main_queue:
+                    item = heapq.heappop(main_queue)
                     q_ptype, q_stream_id, q_sn = item[3], item[4], item[5]
+
+                    if q_ptype == Packet_Type.STREAM_RESEND:
+                        session["track_resend"].discard(q_sn)
+                        session["count_resend"] = max(0, session["count_resend"] - 1)
+                    elif q_ptype == Packet_Type.STREAM_DATA_ACK:
+                        session["track_ack"].discard(q_sn)
+                        session["count_ack"] = max(0, session["count_ack"] - 1)
+                    elif q_ptype in (
+                        Packet_Type.STREAM_FIN,
+                        Packet_Type.STREAM_SYN,
+                        Packet_Type.STREAM_SYN_ACK,
+                    ):
+                        session["track_types"].discard(q_ptype)
+                    elif q_ptype == Packet_Type.STREAM_DATA:
+                        session.get("track_data", set()).discard(q_sn)
+                        session["count_data"] = max(0, session["count_data"] - 1)
+
                     res_ptype, res_stream_id, res_sn, res_data = (
                         q_ptype,
                         q_stream_id,
                         q_sn,
                         item[6],
                     )
-                    # update session queue meta
-                    try:
-                        qmeta = session.get("queue_meta", {}).get("session")
-                        if qmeta:
-                            if q_ptype in (
-                                Packet_Type.STREAM_FIN,
-                                Packet_Type.STREAM_SYN,
-                                Packet_Type.STREAM_SYN_ACK,
-                            ):
-                                qmeta["types"].discard(q_ptype)
-                            if q_ptype == Packet_Type.STREAM_DATA_ACK:
-                                qmeta["acks"].discard((q_ptype, q_sn))
-                            if q_ptype == Packet_Type.STREAM_RESEND:
-                                qmeta["resends"].discard((q_stream_id, q_sn))
-                            # decrement counts
-                            try:
-                                if (
-                                    "counts" in qmeta
-                                    and qmeta["counts"].get(q_ptype, 0) > 0
-                                ):
-                                    qmeta["counts"][q_ptype] -= 1
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    break
             except Exception:
                 pass
 
@@ -882,81 +865,101 @@ class MasterDnsVPNServer:
         is_syn_ack=False,
         is_resend=False,
     ):
-        if session_id not in self.sessions:
+        session = self.sessions.get(session_id)
+        if not session:
             return
 
-        session = self.sessions[session_id]
-
-        if stream_id == 0:
-            target_queue = session.setdefault("session_queue", asyncio.PriorityQueue())
-        else:
-            stream_queues = session.setdefault("stream_queues", {})
-            target_queue = stream_queues.setdefault(stream_id, asyncio.PriorityQueue())
-
-        pending_resends = session.setdefault("pending_resends", set())
-        # queue_meta maps queue_key -> {"types": set(), "acks": set(), "resends": set(), "counts": {}}
-        queue_meta = session.setdefault("queue_meta", {})
-        queue_key = "session" if stream_id == 0 else f"stream:{stream_id}"
-        qm = queue_meta.setdefault(
-            queue_key, {"types": set(), "acks": set(), "resends": set(), "counts": {}}
-        )
-
         ptype = Packet_Type.STREAM_DATA
-        effective_priority = priority
+        eff_priority = priority
 
         if is_ack:
             ptype = Packet_Type.STREAM_DATA_ACK
-            effective_priority = 0
+            eff_priority = 0
         elif is_fin:
             ptype = Packet_Type.STREAM_FIN
-            effective_priority = 0
+            eff_priority = 0
         elif is_syn_ack:
             ptype = Packet_Type.STREAM_SYN_ACK
-            effective_priority = 0
+            eff_priority = 0
         elif is_resend:
             ptype = Packet_Type.STREAM_RESEND
-            effective_priority = 1
+            eff_priority = 1
 
-        if is_resend:
-            resend_key = (stream_id, sn)
-            if resend_key in pending_resends or (stream_id, sn) in qm["resends"]:
-                return
-            pending_resends.add(resend_key)
-            qm["resends"].add((stream_id, sn))
-
-        # Use metadata to avoid scanning the internal queue deque
-        if ptype in (
-            Packet_Type.STREAM_FIN,
-            Packet_Type.STREAM_SYN,
-            Packet_Type.STREAM_SYN_ACK,
-        ):
-            if ptype in qm["types"]:
-                return
-
-        if ptype == Packet_Type.STREAM_DATA_ACK:
-            if (ptype, sn) in qm["acks"]:
-                return
-
+        now = time.time()
         session["enqueue_seq"] = (session.get("enqueue_seq", 0) + 1) & 0x7FFFFFFF
         seq = session["enqueue_seq"]
+        queue_item = (eff_priority, seq, now, ptype, stream_id, sn, data)
 
-        await target_queue.put(
-            (effective_priority, seq, time.time(), ptype, stream_id, sn, data)
-        )
-        # update meta after enqueue
-        if ptype in (
-            Packet_Type.STREAM_FIN,
-            Packet_Type.STREAM_SYN,
-            Packet_Type.STREAM_SYN_ACK,
-        ):
-            qm["types"].add(ptype)
-        if ptype == Packet_Type.STREAM_DATA_ACK:
-            qm["acks"].add((ptype, sn))
-        # increment counts
-        try:
-            qm["counts"][ptype] = qm["counts"].get(ptype, 0) + 1
-        except Exception:
-            pass
+        if stream_id == 0:
+            if is_resend:
+                if sn in session.get("track_data", set()):
+                    return
+                if sn in session["track_resend"]:
+                    return
+                session["track_resend"].add(sn)
+                session["count_resend"] += 1
+
+            elif ptype in (
+                Packet_Type.STREAM_FIN,
+                Packet_Type.STREAM_SYN,
+                Packet_Type.STREAM_SYN_ACK,
+            ):
+                if ptype in session["track_types"]:
+                    return
+                session["track_types"].add(ptype)
+
+            elif ptype == Packet_Type.STREAM_DATA_ACK:
+                if sn in session["track_ack"]:
+                    return
+                session["track_ack"].add(sn)
+                session["count_ack"] += 1
+
+            elif ptype == Packet_Type.STREAM_DATA:
+                if sn in session.setdefault("track_data", set()):
+                    return
+                session["track_data"].add(sn)
+                session["count_data"] += 1
+
+            heapq.heappush(session["main_queue"], queue_item)
+
+        else:
+            stream_data = session.get("streams", {}).get(stream_id)
+            if not stream_data:
+                return
+
+            if is_resend:
+                if sn in stream_data["track_data"]:
+                    return
+                if sn in stream_data["track_resend"]:
+                    return
+                stream_data["track_resend"].add(sn)
+                stream_data["count_resend"] += 1
+
+            elif ptype == Packet_Type.STREAM_FIN:
+                if ptype in stream_data["track_fin"]:
+                    return
+                stream_data["track_fin"].add(ptype)
+                stream_data["count_fin"] += 1
+
+            elif ptype == Packet_Type.STREAM_SYN_ACK:
+                if ptype in stream_data["track_syn_ack"]:
+                    return
+                stream_data["track_syn_ack"].add(ptype)
+                stream_data["count_syn_ack"] += 1
+
+            elif ptype == Packet_Type.STREAM_DATA_ACK:
+                if sn in stream_data["track_ack"]:
+                    return
+                stream_data["track_ack"].add(sn)
+                stream_data["count_ack"] += 1
+
+            elif ptype == Packet_Type.STREAM_DATA:
+                if sn in stream_data["track_data"]:
+                    return
+                stream_data["track_data"].add(sn)
+                stream_data["count_data"] += 1
+
+            heapq.heappush(stream_data["tx_queue"], queue_item)
 
     async def _handle_stream_syn(self, session_id, stream_id):
         session = self.sessions.get(session_id)
@@ -971,8 +974,11 @@ class MasterDnsVPNServer:
             )
             return
 
+        now = time.monotonic()
         stream_data = {
             "stream_id": stream_id,
+            "created_at": now,
+            "last_activity": now,
             "status": "PENDING",
             "arq_obj": None,
             "tx_queue": [],  # heapq
@@ -1006,7 +1012,7 @@ class MasterDnsVPNServer:
                 writer=writer,
                 mtu=session.get("download_mtu", 150),
                 logger=self.logger,
-                window_size=self.ARQ_WINDOW_SIZE,
+                window_size=self.arq_window_size,
             )
 
             stream_data["arq_obj"] = stream
@@ -1029,49 +1035,32 @@ class MasterDnsVPNServer:
             )
 
     async def _server_retransmit_loop(self):
+        """Background task to handle ARQ retransmissions for all active streams."""
         while not self.should_stop.is_set():
             await asyncio.sleep(0.5)
             for session_id, session in list(self.sessions.items()):
-                stream_queues = session.get("stream_queues", {})
-                canceled = session.get("canceled_streams", set())
-
-                for sid in list(stream_queues.keys()):
-                    if stream_queues[sid].empty() and sid in canceled:
-                        del stream_queues[sid]
-                        canceled.discard(sid)
-                        # remove any queue_meta for this stream
-                        try:
-                            session.get("queue_meta", {}).pop(f"stream:{sid}", None)
-                        except Exception:
-                            pass
-
-                to_remove_canceled = [
-                    sid for sid in canceled if sid not in stream_queues
-                ]
-                for sid in to_remove_canceled:
-                    canceled.discard(sid)
-
                 streams = session.get("streams", {})
                 if not streams:
                     continue
 
-                closed_ids = [
-                    sid for sid, s in streams.items() if s != "PENDING" and s.closed
-                ]
+                closed_ids = []
+                for sid, stream_data in streams.items():
+                    arq_obj = stream_data.get("arq_obj")
+                    if arq_obj and getattr(arq_obj, "closed", False):
+                        closed_ids.append(sid)
 
                 for sid in closed_ids:
                     await self.close_stream(
                         session_id, sid, reason="Marked Closed by ARQStream"
                     )
 
-                for stream in list(streams.values()):
-                    if stream != "PENDING":
+                for sid, stream_data in list(streams.items()):
+                    arq_obj = stream_data.get("arq_obj")
+                    if arq_obj:
                         try:
-                            await stream.check_retransmits()
+                            await arq_obj.check_retransmits()
                         except Exception as e:
-                            self.logger.error(
-                                f"Error in retransmit sid {stream.stream_id}: {e}"
-                            )
+                            self.logger.error(f"Error in retransmit sid {sid}: {e}")
 
     # ---------------------------------------------------------
     # App Lifecycle
