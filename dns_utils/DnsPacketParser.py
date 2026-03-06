@@ -358,7 +358,7 @@ class DnsPacketParser:
 
     def simple_question_packet(self, domain: str, qType: int) -> bytes:
         """
-        Create a simple DNS question packet for the given domain and type.
+        Create a simple DNS question packet for the given domain and type with EDNS0 support.
         """
         if qType not in self._VALID_QTYPES:
             self.logger.debug(f"Invalid qType value: {qType}.")
@@ -367,11 +367,15 @@ class DnsPacketParser:
         try:
             pkt_id = random.getrandbits(16)
 
-            header = self._HEADER_PACKER.pack(pkt_id, 0x0100, 1, 0, 0, 0)
+            header = self._HEADER_PACKER.pack(pkt_id, 0x0100, 1, 0, 0, 1)
 
             q_tail = self._Q_PACKER.pack(qType, DNS_QClass.IN)
 
-            return b"".join((header, self._serialize_dns_name(domain), q_tail))
+            edns0_opt_record = b"\x00\x00\x29\x10\x00\x00\x00\x00\x00\x00\x00"
+
+            return b"".join(
+                (header, self._serialize_dns_name(domain), q_tail, edns0_opt_record)
+            )
 
         except Exception as e:
             self.logger.error(f"Failed to create simple question packet: {e}")

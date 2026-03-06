@@ -42,9 +42,9 @@ MIN_UPLOAD_MTU = 40
 MIN_DOWNLOAD_MTU = 40
 
 # Maximum size of data packets sent to the server.
-MAX_UPLOAD_MTU = 160
+MAX_UPLOAD_MTU = 250
 # Maximum size of data packets received from the server.
-MAX_DOWNLOAD_MTU = 200
+MAX_DOWNLOAD_MTU = 1200
 
 # ---------------------------------------------------------------------------
 # Load Balancing

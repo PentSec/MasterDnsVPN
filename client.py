@@ -62,7 +62,7 @@ class MasterDnsVPNClient:
         self.domains: list = self.config.get("DOMAINS", [])
         self.timeout: float = self.config.get("DNS_QUERY_TIMEOUT", 5.0)
         self.max_upload_mtu: int = self.config.get("MAX_UPLOAD_MTU", 512)
-        self.max_download_mtu: int = self.config.get("MAX_DOWNLOAD_MTU", 4096)
+        self.max_download_mtu: int = self.config.get("MAX_DOWNLOAD_MTU", 1200)
         self.min_upload_mtu: int = self.config.get("MIN_UPLOAD_MTU", 0)
         self.min_download_mtu: int = self.config.get("MIN_DOWNLOAD_MTU", 0)
         self.encryption_method: int = self.config.get("DATA_ENCRYPTION_METHOD", 1)
