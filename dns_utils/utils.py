@@ -47,13 +47,33 @@ async def async_recvfrom(loop, sock: socket.socket, nbytes: int):
 
 async def async_sendto(loop, sock: socket.socket, data: bytes, addr):
     """Backwards compatible async UDP send for Python < 3.11"""
+
+    def _should_ignore(exc: BaseException) -> bool:
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError)):
+            return True
+        if isinstance(exc, OSError):
+            if getattr(exc, "winerror", None) in (10054, 10038, 1236):
+                return True
+            if getattr(exc, "errno", None) in (32, 104, 9):
+                return True
+        return False
+
     if hasattr(loop, "sock_sendto"):
-        return await loop.sock_sendto(sock, data, addr)
+        try:
+            return await loop.sock_sendto(sock, data, addr)
+        except Exception as e:
+            if _should_ignore(e):
+                return 0
+            raise
 
     try:
         return sock.sendto(data, addr)
     except BlockingIOError:
         pass
+    except Exception as e:
+        if _should_ignore(e):
+            return 0
+        raise
 
     future = loop.create_future()
     fd = sock.fileno()
@@ -61,13 +81,25 @@ async def async_sendto(loop, sock: socket.socket, data: bytes, addr):
     def cb():
         try:
             sent = sock.sendto(data, addr)
-            loop.remove_writer(fd)
+            try:
+                loop.remove_writer(fd)
+            except Exception:
+                pass
             if not future.done():
                 future.set_result(sent)
         except BlockingIOError:
             pass
         except Exception as e:
-            loop.remove_writer(fd)
+            try:
+                loop.remove_writer(fd)
+            except Exception:
+                pass
+
+            if _should_ignore(e):
+                if not future.done():
+                    future.set_result(0)
+                return
+
             if not future.done():
                 future.set_exception(e)
 
@@ -75,7 +107,10 @@ async def async_sendto(loop, sock: socket.socket, data: bytes, addr):
     try:
         return await future
     except asyncio.CancelledError:
-        loop.remove_writer(fd)
+        try:
+            loop.remove_writer(fd)
+        except Exception:
+            pass
         raise
 
 
