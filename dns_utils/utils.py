@@ -2,7 +2,6 @@
 # Author: MasterkinG32
 # Github: https://github.com/masterking32
 # Year: 2026
-
 from loguru import logger
 import sys
 from typing import Optional
@@ -12,9 +11,12 @@ import socket
 
 
 async def async_recvfrom(loop, sock: socket.socket, nbytes: int):
-    """Backwards compatible async UDP receive for Python < 3.11"""
+    """Backwards compatible async UDP receive for Python < 3.11 with uvloop fallback"""
     if hasattr(loop, "sock_recvfrom"):
-        return await loop.sock_recvfrom(sock, nbytes)
+        try:
+            return await loop.sock_recvfrom(sock, nbytes)
+        except NotImplementedError:
+            pass
 
     try:
         return sock.recvfrom(nbytes)
@@ -46,7 +48,7 @@ async def async_recvfrom(loop, sock: socket.socket, nbytes: int):
 
 
 async def async_sendto(loop, sock: socket.socket, data: bytes, addr):
-    """Backwards compatible async UDP send for Python < 3.11"""
+    """Backwards compatible async UDP send for Python < 3.11 with uvloop fallback"""
 
     def _should_ignore(exc: BaseException) -> bool:
         if isinstance(exc, (ConnectionResetError, BrokenPipeError)):
@@ -61,6 +63,8 @@ async def async_sendto(loop, sock: socket.socket, data: bytes, addr):
     if hasattr(loop, "sock_sendto"):
         try:
             return await loop.sock_sendto(sock, data, addr)
+        except NotImplementedError:
+            pass
         except Exception as e:
             if _should_ignore(e):
                 return 0

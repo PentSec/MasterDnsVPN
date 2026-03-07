@@ -1755,6 +1755,13 @@ def main():
     try:
         if sys.platform == "win32":
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        else:
+            try:
+                import uvloop
+
+                asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+            except ImportError:
+                pass
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
