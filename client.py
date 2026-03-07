@@ -558,6 +558,7 @@ class MasterDnsVPNClient:
                 )
                 optimal_up_mtu = max_up_bytes
                 self.max_upload_mtu = min(self.max_upload_mtu, optimal_up_mtu)
+                self.min_upload_mtu = min(self.min_upload_mtu, self.max_upload_mtu)
 
                 self.logger.info(
                     f"   Domain: <yellow>{d}</yellow> -> "
