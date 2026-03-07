@@ -23,3 +23,4 @@ logs/
 *.bak
 *.tmp
 .exe
+build/

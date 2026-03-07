@@ -72,16 +72,22 @@ jobs:
         run: |
           python build_setup.py build_ext --inplace
 
-      - name: Remove original Python file (Windows)
+      - name: Remove original Python files (Windows)
         if: ${{ matrix.os == 'windows-latest' }}
         shell: powershell
         run: |
           Remove-Item -Path "dns_utils\DnsPacketParser.py" -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "dns_utils\ARQ.py" -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "dns_utils\DNSBalancer.py" -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "dns_utils\PingManager.py" -Force -ErrorAction SilentlyContinue
 
-      - name: Remove original Python file (non-Windows)
+      - name: Remove original Python files (non-Windows)
         if: ${{ matrix.os != 'windows-latest' }}
         run: |
           rm -f dns_utils/DnsPacketParser.py
+          rm -f dns_utils/ARQ.py
+          rm -f dns_utils/DNSBalancer.py
+          rm -f dns_utils/PingManager.py
 
       - name: Prepare build directory (Windows)
         if: ${{ matrix.os == 'windows-latest' }}

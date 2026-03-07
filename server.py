@@ -784,15 +784,13 @@ class MasterDnsVPNServer:
             )
             return None
 
-        data_bytes = (
-            self.dns_parser.codec_transform(download_size_bytes, encrypt=True) + b":"
-        )
-
-        padding_len = download_size - len(data_bytes)
+        padding_len = download_size - len(download_size_bytes)
         if padding_len > 0:
-            data_bytes += os.urandom(padding_len)
+            raw_plaintext = download_size_bytes + os.urandom(padding_len)
         else:
-            data_bytes = data_bytes[:download_size]
+            raw_plaintext = download_size_bytes[:download_size]
+
+        data_bytes = self.dns_parser.codec_transform(raw_plaintext, encrypt=True)
 
         return self.dns_parser.generate_vpn_response_packet(
             domain=request_domain,
@@ -1256,6 +1254,13 @@ def main():
     try:
         if sys.platform == "win32":
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        else:
+            try:
+                import uvloop
+
+                asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+            except ImportError:
+                pass
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
