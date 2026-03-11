@@ -123,7 +123,9 @@ class MasterDnsVPNClient:
         self.packet_duplication_count = self.config.get("PACKET_DUPLICATION_COUNT", 1)
         self.rx_tasks = set()
         self.domains: list = self.config.get("DOMAINS", [])
-        self.domains_lower: tuple = tuple(d.lower() for d in self.domains)
+        self.domains_lower: tuple = tuple(
+            sorted((d.lower() for d in self.domains), key=len, reverse=True)
+        )
         self.main_queue = []
         self.tx_event = asyncio.Event()
         self.rx_semaphore = asyncio.Semaphore(200)

@@ -57,7 +57,9 @@ class MasterDnsVPNServer:
             log_level=self.config.get("LOG_LEVEL", "INFO"), is_server=True
         )
         self.allowed_domains = self.config.get("DOMAIN", [])
-        self.allowed_domains_lower = tuple(d.lower() for d in self.allowed_domains)
+        self.allowed_domains_lower = tuple(
+            sorted((d.lower() for d in self.allowed_domains), key=len, reverse=True)
+        )
         self.encryption_method: int = self.config.get("DATA_ENCRYPTION_METHOD", 1)
 
         self.protocol_type: str = self.config.get("PROTOCOL_TYPE", "TCP").upper()
