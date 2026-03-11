@@ -66,6 +66,11 @@ jobs:
             arch: arm64
             ext: ""
             package: tar.gz
+          - os: macos-13
+            platform: MacOS
+            arch: amd64
+            ext: ""
+            package: tar.gz
 
     steps:
       - name: Checkout repository
