@@ -229,20 +229,39 @@ jobs:
         if: ${{ matrix.os == 'windows-latest' }}
         shell: powershell
         run: |
-          $path = "dist/client_config.toml"
-          if (Test-Path $path) {
-            $content = Get-Content $path -Raw
-            $content = $content -replace 'ENCRYPTION_KEY\s*=\s*""', 'ENCRYPTION_KEY = "smoke-test-key"'
-            Set-Content -Path $path -Value $content -Encoding UTF8
-          }
+          @'
+          from pathlib import Path
+          import re
+
+          path = Path("dist/client_config.toml")
+          if path.exists():
+              content = path.read_text(encoding="utf-8", errors="ignore")
+              content = re.sub(
+                  r'(?m)^\s*ENCRYPTION_KEY\s*=\s*""\s*$',
+                  'ENCRYPTION_KEY = "smoke-test-key"',
+                  content,
+              )
+              path.write_text(content, encoding="utf-8")
+          '@ | python -
 
       - name: Prepare smoke-test config (non-Windows)
         if: ${{ matrix.os != 'windows-latest' }}
         shell: bash
         run: |
-          if [ -f dist/client_config.toml ]; then
-            sed -i 's/^ENCRYPTION_KEY[[:space:]]*=[[:space:]]*""/ENCRYPTION_KEY = "smoke-test-key"/' dist/client_config.toml || true
-          fi
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("dist/client_config.toml")
+          if path.exists():
+              content = path.read_text(encoding="utf-8", errors="ignore")
+              content = re.sub(
+                  r'(?m)^\s*ENCRYPTION_KEY\s*=\s*""\s*$',
+                  'ENCRYPTION_KEY = "smoke-test-key"',
+                  content,
+              )
+              path.write_text(content, encoding="utf-8")
+          PY
 
       - name: Smoke test executables (Windows)
         if: ${{ matrix.os == 'windows-latest' }}
@@ -328,6 +347,13 @@ jobs:
               fi
             fi
           done
+
+      - name: Restore release config templates after smoke test
+        shell: bash
+        run: |
+          cp client_config.toml.simple dist/client_config.toml || true
+          cp client_resolvers.simple.txt dist/client_resolvers.txt || true
+          cp server_config.toml.simple dist/server_config.toml || true
 
       - name: Package artifacts (Windows)
         if: ${{ matrix.os == 'windows-latest' }}
