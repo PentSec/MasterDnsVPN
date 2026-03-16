@@ -1761,33 +1761,42 @@ class MasterDnsVPNClient(PacketQueueMixin):
         if not domain or not resolver:
             return False
 
-        up_valid, up_mtu_bytes, up_mtu_char = await self.test_upload_mtu_size(
-            domain, resolver, 53, self.max_upload_mtu
-        )
-        if (not up_valid) or (
-            self.min_upload_mtu > 0 and up_mtu_bytes < self.min_upload_mtu
-        ):
-            return False
+        synced_up = int(self.synced_upload_mtu or 0)
+        synced_down = int(self.synced_download_mtu or 0)
 
-        down_valid, down_mtu_bytes = await self.test_download_mtu_size(
-            domain, resolver, 53, self.max_download_mtu, up_mtu_bytes
-        )
-        if (not down_valid) or (
-            self.min_download_mtu > 0 and down_mtu_bytes < self.min_download_mtu
-        ):
-            return False
-
-        # Keep runtime MTU consistency; avoid adding servers that cannot handle
-        # the currently negotiated session MTU.
-        if (
-            self.synced_upload_mtu > 0
-            and self.synced_download_mtu > 0
-            and (
-                up_mtu_bytes < self.synced_upload_mtu
-                or down_mtu_bytes < self.synced_download_mtu
+        if synced_up <= 0 or synced_down <= 0:
+            self.logger.debug(
+                f"Cannot recheck connection {domain} via {resolver} because synced MTU values are not available."
             )
-        ):
             return False
+
+        up_valid = await self.send_upload_mtu_test(
+            domain,
+            resolver,
+            53,
+            synced_up,
+            is_retry=False,
+        )
+        if not up_valid:
+            return False
+
+        up_mtu_char = self.dns_parser.calculate_upload_mtu(
+            domain=domain, mtu=synced_up
+        )[0]
+        up_mtu_bytes = synced_up
+
+        down_valid = await self.send_download_mtu_test(
+            domain,
+            resolver,
+            53,
+            synced_down,
+            synced_up,
+            is_retry=False,
+        )
+        if not down_valid:
+            return False
+
+        down_mtu_bytes = synced_down
 
         connection["upload_mtu_bytes"] = up_mtu_bytes
         connection["upload_mtu_chars"] = up_mtu_char

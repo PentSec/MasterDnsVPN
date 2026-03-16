@@ -858,7 +858,8 @@ class ARQ:
 
         current_task = asyncio.current_task()
         tasks_to_cancel = [
-            t for t in (getattr(self, "io_task", None), getattr(self, "rtx_task", None))
+            t
+            for t in (getattr(self, "io_task", None), getattr(self, "rtx_task", None))
             if t and not t.done() and t is not current_task
         ]
         for task in tasks_to_cancel:
