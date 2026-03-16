@@ -543,7 +543,13 @@ class MasterDnsVPNServer(PacketQueueMixin):
             pass
 
         self.sessions.pop(session_id, None)
-        self.invalid_cookie_tracker.pop(session_id, None)
+        for tracker_key in tuple(self.invalid_cookie_tracker):
+            if (
+                isinstance(tracker_key, tuple)
+                and tracker_key
+                and int(tracker_key[0]) == int(session_id)
+            ):
+                self.invalid_cookie_tracker.pop(tracker_key, None)
 
         try:
             if 1 <= session_id <= getattr(self, "_max_sessions", 255):
@@ -580,17 +586,27 @@ class MasterDnsVPNServer(PacketQueueMixin):
         return None
 
     def _should_emit_invalid_cookie_error(
-        self, packet_type: int, session_id: int, now: float | None = None
+        self,
+        packet_type: int,
+        session_id: int,
+        expected_cookie: int | None,
+        packet_cookie: int,
+        now: float | None = None,
     ) -> bool:
         if int(packet_type) in self._pre_session_packet_types:
             return False
 
         now = time.monotonic() if now is None else now
         cutoff = now - self.invalid_cookie_window_seconds
-        attempts = self.invalid_cookie_tracker.get(session_id)
+        tracker_key = (
+            int(session_id),
+            -1 if expected_cookie is None else int(expected_cookie),
+            int(packet_cookie),
+        )
+        attempts = self.invalid_cookie_tracker.get(tracker_key)
         if attempts is None:
             attempts = deque()
-            self.invalid_cookie_tracker[session_id] = attempts
+            self.invalid_cookie_tracker[tracker_key] = attempts
 
         while attempts and attempts[0] < cutoff:
             attempts.popleft()
@@ -812,13 +828,13 @@ class MasterDnsVPNServer(PacketQueueMixin):
                     self.recently_closed_sessions.pop(sid, None)
 
                 expired_invalid_cookie = [
-                    sid
-                    for sid, attempts in self.invalid_cookie_tracker.items()
+                    tracker_key
+                    for tracker_key, attempts in self.invalid_cookie_tracker.items()
                     if not attempts
                     or attempts[-1] < (now - self.invalid_cookie_window_seconds)
                 ]
-                for sid in expired_invalid_cookie:
-                    self.invalid_cookie_tracker.pop(sid, None)
+                for tracker_key in expired_invalid_cookie:
+                    self.invalid_cookie_tracker.pop(tracker_key, None)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -2343,7 +2359,12 @@ class MasterDnsVPNServer(PacketQueueMixin):
                 self.logger.debug(
                     f"Invalid session cookie for packet type '{packet_type}' session '{session_id}' from {addr}. Dropping."
                 )
-                if self._should_emit_invalid_cookie_error(packet_type, session_id):
+                if self._should_emit_invalid_cookie_error(
+                    packet_type,
+                    session_id,
+                    expected_cookie,
+                    packet_cookie,
+                ):
                     response_info = self.recently_closed_sessions.get(session_id)
                     current_session = self.sessions.get(session_id)
                     if current_session is not None:
