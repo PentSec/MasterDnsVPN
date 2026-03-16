@@ -952,6 +952,16 @@ class MasterDnsVPNClient(PacketQueueMixin):
         self._deactivate_response_queue(sid)
         return None, None
 
+    def _has_other_active_response_queue(self, exclude_stream_id: int) -> bool:
+        excluded = int(exclude_stream_id)
+        for sid in tuple(self.active_response_ids):
+            if int(sid) == excluded:
+                continue
+            q_ref, owner = self._get_active_response_queue(sid)
+            if q_ref and owner:
+                return True
+        return False
+
     def _match_allowed_domain_suffix(self, qname: str) -> Optional[str]:
         """Return the matched allowed domain suffix for qname, if any."""
         if not qname:
@@ -3276,62 +3286,67 @@ class MasterDnsVPNClient(PacketQueueMixin):
         return bytes(packed_buffer) if blocks > 1 else b""
 
     def _dequeue_response_packet(self):
-        if not self.active_response_ids:
-            return None
+        while self.active_response_ids:
+            last_stream_id = int(self.round_robin_stream_id)
+            selected_pos = bisect_right(self.active_response_ids, last_stream_id)
+            attempts = len(self.active_response_ids)
+            target_queue = None
+            pop_owner = None
+            selected_stream_id = 0
 
-        last_stream_id = int(self.round_robin_stream_id)
-        selected_pos = bisect_right(self.active_response_ids, last_stream_id)
-        attempts = len(self.active_response_ids)
-        target_queue = None
-        pop_owner = None
-        selected_stream_id = 0
-
-        while attempts > 0 and self.active_response_ids:
-            if selected_pos >= len(self.active_response_ids):
-                selected_pos = 0
-            candidate_stream_id = self.active_response_ids[selected_pos]
-            target_queue, pop_owner = self._get_active_response_queue(
-                candidate_stream_id
-            )
-            if target_queue and pop_owner:
-                selected_stream_id = candidate_stream_id
-                break
-            attempts -= 1
-
-        if not target_queue or not pop_owner:
-            return None
-
-        item = heapq.heappop(target_queue)
-        self._on_queue_pop(pop_owner, item)
-        if not target_queue:
-            self._deactivate_response_queue(selected_stream_id)
-        self.round_robin_stream_id = selected_stream_id
-
-        if item[2] == Packet_Type.PING and self.count_ping > 0:
-            self.count_ping -= 1
-
-        if (
-            item[2] in self._packable_control_types
-            and not item[5]
-            and self.max_packed_blocks > 1
-        ):
-            packed = self._pack_selected_response_blocks(
-                selected_stream_id=selected_stream_id,
-                selected_queue=target_queue,
-                selected_owner=pop_owner,
-                first_item=item,
-            )
-            if packed:
-                return (
-                    item[0],
-                    item[1],
-                    Packet_Type.PACKED_CONTROL_BLOCKS,
-                    0,
-                    0,
-                    packed,
+            while attempts > 0 and self.active_response_ids:
+                if selected_pos >= len(self.active_response_ids):
+                    selected_pos = 0
+                candidate_stream_id = self.active_response_ids[selected_pos]
+                target_queue, pop_owner = self._get_active_response_queue(
+                    candidate_stream_id
                 )
+                if target_queue and pop_owner:
+                    selected_stream_id = candidate_stream_id
+                    break
+                attempts -= 1
 
-        return item
+            if not target_queue or not pop_owner:
+                return None
+
+            item = heapq.heappop(target_queue)
+            self._on_queue_pop(pop_owner, item)
+            if not target_queue:
+                self._deactivate_response_queue(selected_stream_id)
+            self.round_robin_stream_id = selected_stream_id
+
+            if item[2] == Packet_Type.PING:
+                if self.count_ping > 0:
+                    self.count_ping -= 1
+                if selected_stream_id == 0 and self._has_other_active_response_queue(
+                    exclude_stream_id=0
+                ):
+                    continue
+
+            if (
+                item[2] in self._packable_control_types
+                and not item[5]
+                and self.max_packed_blocks > 1
+            ):
+                packed = self._pack_selected_response_blocks(
+                    selected_stream_id=selected_stream_id,
+                    selected_queue=target_queue,
+                    selected_owner=pop_owner,
+                    first_item=item,
+                )
+                if packed:
+                    return (
+                        item[0],
+                        item[1],
+                        Packet_Type.PACKED_CONTROL_BLOCKS,
+                        0,
+                        0,
+                        packed,
+                    )
+
+            return item
+
+        return None
 
     async def _tx_worker(self):
         while not self.should_stop.is_set() and not self.session_restart_event.is_set():
