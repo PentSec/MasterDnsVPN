@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"masterdnsvpn-go/internal/arq"
@@ -47,6 +48,7 @@ type Client struct {
 	maxPackedBlocks     int
 
 	exchangeQueryFn func(Connection, []byte, time.Duration) ([]byte, error)
+	fragmentLimits  sync.Map
 }
 
 type Connection struct {
@@ -161,6 +163,7 @@ func (c *Client) ResetRuntimeState(resetSessionCookie bool) {
 	}
 	c.responseMode = 0
 	c.maxPackedBlocks = 1
+	c.fragmentLimits = sync.Map{}
 }
 
 func (c *Client) updateMaxPackedBlocks() {

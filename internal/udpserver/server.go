@@ -44,6 +44,7 @@ type Server struct {
 	sessions                *sessionStore
 	invalidCookieTracker    *invalidCookieTracker
 	dnsCache                *dnscache.Store
+	dnsResolveInflight      *dnsResolveInflightManager
 	dnsUpstreamServers      []string
 	dnsFragmentMu           sync.Mutex
 	dnsFragments            map[dnsFragmentKey]*dnsFragmentEntry
@@ -74,6 +75,7 @@ func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Se
 			time.Duration(cfg.DNSCacheTTLSeconds*float64(time.Second)),
 			cfg.DNSFragmentAssemblyTimeout(),
 		),
+		dnsResolveInflight:      newDNSResolveInflightManager(cfg.DNSFragmentAssemblyTimeout()),
 		dnsUpstreamServers:      append([]string(nil), cfg.DNSUpstreamServers...),
 		dnsFragments:            make(map[dnsFragmentKey]*dnsFragmentEntry, 32),
 		uploadCompressionMask:   buildCompressionMask(cfg.SupportedUploadCompressionTypes),

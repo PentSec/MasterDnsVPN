@@ -315,22 +315,78 @@ func TestHandleDNSQueryPacketRejectsUnsupportedQueryType(t *testing.T) {
 	}
 }
 
-func TestHandleDNSQueryPacketDedupesInflightDispatch(t *testing.T) {
-	c := New(config.ClientConfig{
-		LocalDNSPendingTimeoutSec: 30,
-	}, nil, nil)
-	now := time.Unix(1700000000, 0)
-	c.now = func() time.Time { return now }
-
-	query := buildClientTestDNSQuery(0x1234, "example.com", Enums.DNS_RECORD_TYPE_A, Enums.DNSQ_CLASS_IN)
-	_, dispatch := c.handleDNSQueryPacket(query)
-	if dispatch == nil {
-		t.Fatal("first query should dispatch")
+func TestResolveDNSQueryPacketDedupesInflightDispatch(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
 	}
 
-	_, dispatch = c.handleDNSQueryPacket(query)
-	if dispatch != nil {
-		t.Fatal("second inflight query should not dispatch again")
+	c := New(config.ClientConfig{
+		LocalDNSPendingTimeoutSec: 1,
+	}, nil, codec)
+	now := time.Unix(1700000000, 0)
+	c.now = func() time.Time { return now }
+	c.connections = []Connection{{
+		Domain:        "v.example.com",
+		Resolver:      "127.0.0.1",
+		ResolverPort:  5353,
+		ResolverLabel: "127.0.0.1:5353",
+		Key:           "127.0.0.1|5353|v.example.com",
+		IsValid:       true,
+	}}
+	c.connectionsByKey = map[string]int{c.connections[0].Key: 0}
+	c.rebuildBalancer()
+	c.sessionID = 7
+	c.sessionCookie = 9
+
+	query := buildClientTestDNSQuery(0x1234, "example.com", Enums.DNS_RECORD_TYPE_A, Enums.DNSQ_CLASS_IN)
+	serverFailure, err := DnsParser.BuildServerFailureResponse(query)
+	if err != nil {
+		t.Fatalf("BuildServerFailureResponse returned error: %v", err)
+	}
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var callCount int
+	c.exchangeQueryFn = func(conn Connection, packet []byte, timeout time.Duration) ([]byte, error) {
+		callCount++
+		if callCount == 1 {
+			started <- struct{}{}
+			<-release
+		}
+		queryPacket, err := DnsParser.ParsePacketLite(packet)
+		if err != nil || !queryPacket.HasQuestion {
+			t.Fatalf("unexpected tunnel dns query: err=%v", err)
+		}
+		vpnPacket, err := VpnProto.ParseFromLabels(extractTestTunnelLabels(queryPacket.FirstQuestion.Name, "v.example.com"), c.codec)
+		if err != nil {
+			t.Fatalf("ParseFromLabels returned error: %v", err)
+		}
+		return DnsParser.BuildVPNResponsePacket(packet, queryPacket.FirstQuestion.Name, VpnProto.Packet{
+			SessionID:      c.sessionID,
+			SessionCookie:  c.sessionCookie,
+			PacketType:     Enums.PACKET_DNS_QUERY_RES,
+			StreamID:       0,
+			SequenceNum:    vpnPacket.SequenceNum,
+			FragmentID:     0,
+			TotalFragments: 1,
+			Payload:        serverFailure,
+		}, false)
+	}
+
+	results := make(chan []byte, 2)
+	go func() { results <- c.resolveDNSQueryPacket(query) }()
+	<-started
+	go func() { results <- c.resolveDNSQueryPacket(query) }()
+	close(release)
+
+	response1 := <-results
+	response2 := <-results
+	if string(response1) != string(serverFailure) || string(response2) != string(serverFailure) {
+		t.Fatal("expected both queries to reuse same inflight response")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected one tunnel dispatch, got=%d", callCount)
 	}
 }
 

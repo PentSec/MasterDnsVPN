@@ -68,7 +68,27 @@ func (s *Server) buildDNSQueryResponsePayload(rawQuery []byte, sessionID uint8, 
 		return cached
 	}
 
+	inflightEntry, leader := s.dnsResolveInflight.Acquire(cacheKey, now)
+	if !leader {
+		waitTimeout := s.cfg.DNSUpstreamTimeout() * 2
+		if waitTimeout <= 0 {
+			waitTimeout = 8 * time.Second
+		}
+		if resolved, ok := s.dnsResolveInflight.Wait(inflightEntry, waitTimeout); ok && len(resolved) != 0 {
+			return dnscache.PatchResponseForQuery(resolved, rawQuery)
+		}
+		if cached, ok := s.dnsCache.GetReady(cacheKey, rawQuery, time.Now()); ok {
+			return cached
+		}
+		response, responseErr := DnsParser.BuildServerFailureResponseFromLite(rawQuery, parsed)
+		if responseErr != nil {
+			return nil
+		}
+		return response
+	}
+
 	resolved, err := s.resolveDNSUpstream(rawQuery)
+	s.dnsResolveInflight.Resolve(cacheKey, resolved)
 	if err != nil || len(resolved) == 0 {
 		response, responseErr := DnsParser.BuildServerFailureResponseFromLite(rawQuery, parsed)
 		if responseErr != nil {

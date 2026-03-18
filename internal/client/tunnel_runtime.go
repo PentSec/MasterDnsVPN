@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"strconv"
 	"time"
 
 	DnsParser "masterdnsvpn-go/internal/dnsparser"
@@ -19,6 +20,7 @@ import (
 )
 
 var ErrTunnelDNSDispatchFailed = errors.New("dns tunnel dispatch failed")
+var ErrTunnelDNSFragmentTooLarge = errors.New("dns tunnel payload exceeds fragment limit")
 
 func (c *Client) dispatchDNSQuery(request *dnsDispatchRequest) (response []byte, err error) {
 	if c == nil || request == nil || len(request.Query) == 0 {
@@ -27,11 +29,6 @@ func (c *Client) dispatchDNSQuery(request *dnsDispatchRequest) (response []byte,
 	if c.sessionID == 0 {
 		return nil, ErrSessionInitFailed
 	}
-	defer func() {
-		if err != nil {
-			c.dnsInflight.Complete(request.CacheKey)
-		}
-	}()
 
 	packet, err := c.exchangeMainStreamPacket(Enums.PACKET_DNS_QUERY_REQ, request.Query)
 	if err != nil {
@@ -53,7 +50,6 @@ func (c *Client) dispatchDNSQuery(request *dnsDispatchRequest) (response []byte,
 			c.now(),
 		)
 	}
-	c.dnsInflight.Complete(request.CacheKey)
 	return packet.Payload, nil
 }
 
@@ -87,7 +83,10 @@ func (c *Client) exchangeMainStreamPacket(packetType uint8, payload []byte) (Vpn
 }
 
 func (c *Client) exchangeMainStreamPacketWithConnection(connection Connection, packetType uint8, sequenceNum uint16, payload []byte, timeout time.Duration) (VpnProto.Packet, error) {
-	fragments := c.fragmentMainStreamPayload(payload)
+	fragments, err := c.fragmentMainStreamPayload(connection.Domain, packetType, payload)
+	if err != nil {
+		return VpnProto.Packet{}, err
+	}
 	for fragmentID, fragmentPayload := range fragments {
 		query, err := c.buildMainStreamQuery(
 			connection.Domain,
@@ -145,36 +144,33 @@ func (c *Client) buildMainStreamQuery(domain string, packetType uint8, sequenceN
 	return DnsParser.BuildTXTQuestionPacket(name, Enums.DNS_RECORD_TYPE_TXT, EDnsSafeUDPSize)
 }
 
-func (c *Client) fragmentMainStreamPayload(payload []byte) [][]byte {
+func (c *Client) fragmentMainStreamPayload(domain string, packetType uint8, payload []byte) ([][]byte, error) {
 	if len(payload) == 0 {
-		return [][]byte{{}}
+		return [][]byte{{}}, nil
 	}
 
-	limit := c.syncedUploadMTU
-	if limit <= 0 {
-		limit = EDnsSafeUDPSize
-	}
+	limit := c.maxMainStreamFragmentPayload(domain, packetType)
 	if limit < 1 {
-		limit = 1
+		return nil, ErrTunnelDNSDispatchFailed
 	}
 	if len(payload) <= limit {
-		return [][]byte{payload}
+		return [][]byte{payload}, nil
 	}
 
 	total := (len(payload) + limit - 1) / limit
 	if total > 255 {
-		total = 255
+		return nil, ErrTunnelDNSFragmentTooLarge
 	}
 
 	fragments := make([][]byte, 0, total)
-	for start := 0; start < len(payload) && len(fragments) < total; start += limit {
+	for start := 0; start < len(payload); start += limit {
 		end := start + limit
 		if end > len(payload) {
 			end = len(payload)
 		}
 		fragments = append(fragments, payload[start:end])
 	}
-	return fragments
+	return fragments, nil
 }
 
 func (c *Client) exchangeDNSOverConnection(connection Connection, packet []byte, timeout time.Duration) ([]byte, error) {
@@ -199,6 +195,48 @@ func (c *Client) nextMainSequence() uint16 {
 		c.mainSequence = 1
 	}
 	return c.mainSequence
+}
+
+func (c *Client) maxMainStreamFragmentPayload(domain string, packetType uint8) int {
+	if c == nil {
+		return 0
+	}
+
+	cacheKey := domain + "|" + strconv.Itoa(int(packetType))
+	if cached, ok := c.fragmentLimits.Load(cacheKey); ok {
+		return cached.(int)
+	}
+
+	high := c.syncedUploadMTU
+	if high <= 0 {
+		high = EDnsSafeUDPSize
+	}
+	best := 0
+	low := 1
+	for low <= high {
+		mid := (low + high) / 2
+		if c.canBuildMainStreamPayload(domain, packetType, mid) {
+			best = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+
+	c.fragmentLimits.Store(cacheKey, best)
+	return best
+}
+
+func (c *Client) canBuildMainStreamPayload(domain string, packetType uint8, payloadLen int) bool {
+	if payloadLen < 0 {
+		return false
+	}
+	payload := make([]byte, payloadLen)
+	for i := range payload {
+		payload[i] = 0xAB
+	}
+	_, err := c.buildMainStreamQuery(domain, packetType, 1, 0, 1, payload)
+	return err == nil
 }
 
 func shouldCacheTunnelDNSResponse(response []byte) bool {

@@ -8,6 +8,8 @@
 package client
 
 import (
+	"time"
+
 	"masterdnsvpn-go/internal/dnscache"
 	DnsParser "masterdnsvpn-go/internal/dnsparser"
 )
@@ -63,9 +65,6 @@ func (c *Client) handleDNSQueryPacket(query []byte) ([]byte, *dnsDispatchRequest
 	if !result.DispatchNeeded {
 		return response, nil
 	}
-	if !c.dnsInflight.Begin(cacheKey, now) {
-		return response, nil
-	}
 
 	dispatch := &dnsDispatchRequest{
 		CacheKey: append([]byte(nil), cacheKey...),
@@ -75,6 +74,32 @@ func (c *Client) handleDNSQueryPacket(query []byte) ([]byte, *dnsDispatchRequest
 		QClass:   metadata.QClass,
 	}
 	return response, dispatch
+}
+
+func (c *Client) resolveDNSQueryPacket(query []byte) []byte {
+	response, dispatch := c.handleDNSQueryPacket(query)
+	if dispatch == nil {
+		return response
+	}
+
+	now := c.now()
+	inflightEntry, leader := c.dnsInflight.Acquire(dispatch.CacheKey, now)
+	if !leader {
+		if c.dnsInflight.Wait(inflightEntry, time.Duration(c.cfg.LocalDNSPendingTimeoutSec*float64(time.Second))) {
+			if cached, ok := c.localDNSCache.GetReady(dispatch.CacheKey, query, c.now()); ok {
+				return cached
+			}
+		}
+		return response
+	}
+
+	defer c.dnsInflight.Resolve(dispatch.CacheKey)
+
+	tunnelResponse, err := c.dispatchDNSQuery(dispatch)
+	if err == nil && len(tunnelResponse) != 0 {
+		return tunnelResponse
+	}
+	return response
 }
 
 func isSupportedDNSQuery(qType uint16, qClass uint16) bool {

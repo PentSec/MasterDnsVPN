@@ -5,42 +5,43 @@
 // Year: 2026
 // ==============================================================================
 
-package client
+package udpserver
 
 import (
 	"sync"
 	"time"
 )
 
-type dnsInflightEntry struct {
+type dnsResolveInflightEntry struct {
 	createdAt time.Time
 	ready     chan struct{}
+	response  []byte
 }
 
-type dnsInflightManager struct {
+type dnsResolveInflightManager struct {
 	timeout       time.Duration
 	cleanupWindow time.Duration
 	nextCleanupAt time.Time
 	mu            sync.Mutex
-	items         map[string]*dnsInflightEntry
+	items         map[string]*dnsResolveInflightEntry
 }
 
-func newDNSInflightManager(timeout time.Duration) *dnsInflightManager {
+func newDNSResolveInflightManager(timeout time.Duration) *dnsResolveInflightManager {
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 16 * time.Second
 	}
 	cleanupWindow := timeout / 4
 	if cleanupWindow < time.Second {
 		cleanupWindow = time.Second
 	}
-	return &dnsInflightManager{
+	return &dnsResolveInflightManager{
 		timeout:       timeout,
 		cleanupWindow: cleanupWindow,
-		items:         make(map[string]*dnsInflightEntry),
+		items:         make(map[string]*dnsResolveInflightEntry, 32),
 	}
 }
 
-func (m *dnsInflightManager) Acquire(cacheKey []byte, now time.Time) (*dnsInflightEntry, bool) {
+func (m *dnsResolveInflightManager) Acquire(cacheKey []byte, now time.Time) (*dnsResolveInflightEntry, bool) {
 	if m == nil || len(cacheKey) == 0 {
 		return nil, false
 	}
@@ -62,7 +63,7 @@ func (m *dnsInflightManager) Acquire(cacheKey []byte, now time.Time) (*dnsInflig
 		return entry, false
 	}
 
-	entry := &dnsInflightEntry{
+	entry := &dnsResolveInflightEntry{
 		createdAt: now,
 		ready:     make(chan struct{}),
 	}
@@ -70,12 +71,7 @@ func (m *dnsInflightManager) Acquire(cacheKey []byte, now time.Time) (*dnsInflig
 	return entry, true
 }
 
-func (m *dnsInflightManager) Begin(cacheKey []byte, now time.Time) bool {
-	_, leader := m.Acquire(cacheKey, now)
-	return leader
-}
-
-func (m *dnsInflightManager) Resolve(cacheKey []byte) {
+func (m *dnsResolveInflightManager) Resolve(cacheKey []byte, response []byte) {
 	if m == nil || len(cacheKey) == 0 {
 		return
 	}
@@ -83,6 +79,9 @@ func (m *dnsInflightManager) Resolve(cacheKey []byte) {
 	m.mu.Lock()
 	entry := m.items[string(cacheKey)]
 	delete(m.items, string(cacheKey))
+	if entry != nil && len(response) != 0 {
+		entry.response = append([]byte(nil), response...)
+	}
 	m.mu.Unlock()
 
 	if entry != nil {
@@ -90,19 +89,15 @@ func (m *dnsInflightManager) Resolve(cacheKey []byte) {
 	}
 }
 
-func (m *dnsInflightManager) Complete(cacheKey []byte) {
-	m.Resolve(cacheKey)
-}
-
-func (m *dnsInflightManager) Wait(entry *dnsInflightEntry, timeout time.Duration) bool {
+func (m *dnsResolveInflightManager) Wait(entry *dnsResolveInflightEntry, timeout time.Duration) ([]byte, bool) {
 	if entry == nil {
-		return false
+		return nil, false
 	}
 	if timeout <= 0 {
 		timeout = m.timeout
 	}
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 16 * time.Second
 	}
 
 	timer := time.NewTimer(timeout)
@@ -110,8 +105,11 @@ func (m *dnsInflightManager) Wait(entry *dnsInflightEntry, timeout time.Duration
 
 	select {
 	case <-entry.ready:
-		return true
+		if len(entry.response) == 0 {
+			return nil, true
+		}
+		return append([]byte(nil), entry.response...), true
 	case <-timer.C:
-		return false
+		return nil, false
 	}
 }
