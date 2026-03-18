@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"time"
 
 	"masterdnsvpn-go/internal/compression"
 	DnsParser "masterdnsvpn-go/internal/dnsparser"
@@ -51,14 +52,14 @@ func (c *Client) InitializeSession(maxAttempts int) error {
 			continue
 		}
 
-		probeTransport, err := c.newMTUProbeTransport(&conn)
+		transport, err := newUDPQueryTransport(conn.ResolverLabel)
 		if err != nil {
 			c.SetConnectionValidity(conn.Key, false)
 			continue
 		}
 
-		response, err := c.sendDNSQuery(probeTransport, query)
-		_ = probeTransport.conn.Close()
+		response, err := exchangeUDPQuery(transport, query, time.Duration(c.cfg.MTUTestTimeout*float64(time.Second)))
+		_ = transport.conn.Close()
 		if err != nil {
 			c.SetConnectionValidity(conn.Key, false)
 			continue
@@ -76,6 +77,7 @@ func (c *Client) InitializeSession(maxAttempts int) error {
 
 		c.sessionID = packet.Payload[0]
 		c.sessionCookie = packet.Payload[1]
+		c.responseMode = initPayload[0]
 		c.uploadCompression, c.downloadCompression = compression.SplitPair(packet.Payload[2])
 		c.applySessionCompressionPolicy()
 		return nil

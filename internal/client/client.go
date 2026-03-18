@@ -36,13 +36,17 @@ type Client struct {
 	successMTUChecks    bool
 	sessionID           uint8
 	sessionCookie       uint8
+	responseMode        uint8
 	uploadCompression   uint8
 	downloadCompression uint8
 	enqueueSeq          uint64
+	mainSequence        uint16
 	syncedUploadMTU     int
 	syncedDownloadMTU   int
 	syncedUploadChars   int
 	maxPackedBlocks     int
+
+	exchangeQueryFn func(Connection, []byte, time.Duration) ([]byte, error)
 }
 
 type Connection struct {
@@ -150,10 +154,12 @@ func (c *Client) MaxPackedBlocks() int {
 
 func (c *Client) ResetRuntimeState(resetSessionCookie bool) {
 	c.enqueueSeq = 0
+	c.mainSequence = 0
 	c.sessionID = 0
 	if resetSessionCookie {
 		c.sessionCookie = 0
 	}
+	c.responseMode = 0
 	c.maxPackedBlocks = 1
 }
 

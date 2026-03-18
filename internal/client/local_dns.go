@@ -120,7 +120,12 @@ func (c *Client) localDNSWorker(ctx context.Context, conn *net.UDPConn, queue <-
 					}
 				}()
 
-				response, _ := c.handleDNSQueryPacket(req.buffer[:req.size])
+				response, dispatch := c.handleDNSQueryPacket(req.buffer[:req.size])
+				if dispatch != nil {
+					if tunnelResponse, err := c.dispatchDNSQuery(dispatch); err == nil && len(tunnelResponse) != 0 {
+						response = tunnelResponse
+					}
+				}
 				if len(response) != 0 {
 					_, _ = conn.WriteToUDP(response, req.addr)
 				}

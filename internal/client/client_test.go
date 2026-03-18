@@ -9,13 +9,16 @@ package client
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 	"time"
 
 	"masterdnsvpn-go/internal/compression"
 	"masterdnsvpn-go/internal/config"
 	"masterdnsvpn-go/internal/dnscache"
+	DnsParser "masterdnsvpn-go/internal/dnsparser"
 	Enums "masterdnsvpn-go/internal/enums"
+	"masterdnsvpn-go/internal/security"
 	VpnProto "masterdnsvpn-go/internal/vpnproto"
 )
 
@@ -350,6 +353,211 @@ func TestHandleDNSQueryPacketRejectsMalformedQuery(t *testing.T) {
 	if len(response) == 0 {
 		t.Fatal("expected format error response for malformed dns query")
 	}
+}
+
+func TestDispatchDNSQueryCachesReadyTunnelResponse(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
+	}
+
+	c := New(config.ClientConfig{
+		BaseEncodeData:            false,
+		LocalDNSCacheMaxRecords:   8,
+		LocalDNSCacheTTLSeconds:   60,
+		LocalDNSPendingTimeoutSec: 5,
+		CompressionMinSize:        compression.DefaultMinSize,
+	}, nil, codec)
+	now := time.Unix(1700000000, 0)
+	c.now = func() time.Time { return now }
+	c.connections = []Connection{{
+		Domain:        "v.example.com",
+		Resolver:      "127.0.0.1",
+		ResolverPort:  5353,
+		ResolverLabel: "127.0.0.1:5353",
+		Key:           "127.0.0.1|5353|v.example.com",
+		IsValid:       true,
+	}}
+	c.connectionsByKey = map[string]int{c.connections[0].Key: 0}
+	c.rebuildBalancer()
+	c.sessionID = 7
+	c.sessionCookie = 9
+	c.responseMode = mtuProbeRawResponse
+
+	rawQuery := buildClientTestDNSQuery(0x1234, "example.com", Enums.DNS_RECORD_TYPE_A, Enums.DNSQ_CLASS_IN)
+	rawResponse := []byte{
+		0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
+	rawResponse = append(rawResponse, encodeClientTestDNSName("example.com")...)
+	rawResponse = append(rawResponse, 0x00, byte(Enums.DNS_RECORD_TYPE_A), 0x00, byte(Enums.DNSQ_CLASS_IN))
+
+	c.exchangeQueryFn = func(conn Connection, packet []byte, timeout time.Duration) ([]byte, error) {
+		if conn.Key != c.connections[0].Key {
+			t.Fatalf("unexpected connection key: got=%q want=%q", conn.Key, c.connections[0].Key)
+		}
+		if timeout <= 0 {
+			t.Fatal("expected positive timeout")
+		}
+
+		queryPacket, err := DnsParser.ParsePacketLite(packet)
+		if err != nil || !queryPacket.HasQuestion {
+			t.Fatalf("unexpected tunnel dns query: err=%v", err)
+		}
+
+		vpnPacket, err := VpnProto.ParseFromLabels(extractTestTunnelLabels(queryPacket.FirstQuestion.Name, "v.example.com"), c.codec)
+		if err != nil {
+			t.Fatalf("ParseFromLabels returned error: %v", err)
+		}
+		if vpnPacket.PacketType != Enums.PACKET_DNS_QUERY_REQ {
+			t.Fatalf("unexpected request packet type: got=%d", vpnPacket.PacketType)
+		}
+		if vpnPacket.StreamID != 0 {
+			t.Fatalf("unexpected request stream id: got=%d", vpnPacket.StreamID)
+		}
+
+		return DnsParser.BuildVPNResponsePacket(packet, queryPacket.FirstQuestion.Name, VpnProto.Packet{
+			SessionID:      c.sessionID,
+			SessionCookie:  c.sessionCookie,
+			PacketType:     Enums.PACKET_DNS_QUERY_RES,
+			StreamID:       0,
+			SequenceNum:    vpnPacket.SequenceNum,
+			FragmentID:     0,
+			TotalFragments: 1,
+			Payload:        rawResponse,
+		}, false)
+	}
+
+	request := &dnsDispatchRequest{
+		CacheKey: dnscache.BuildKey("example.com", Enums.DNS_RECORD_TYPE_A, Enums.DNSQ_CLASS_IN),
+		Query:    rawQuery,
+		Domain:   "example.com",
+		QType:    Enums.DNS_RECORD_TYPE_A,
+		QClass:   Enums.DNSQ_CLASS_IN,
+	}
+
+	response, err := c.dispatchDNSQuery(request)
+	if err != nil {
+		t.Fatalf("dispatchDNSQuery returned error: %v", err)
+	}
+	if string(response) != string(rawResponse) {
+		t.Fatal("unexpected tunnel dns response payload")
+	}
+
+	cached, ok := c.LocalDNSCache().GetReady(request.CacheKey, rawQuery, now)
+	if !ok {
+		t.Fatal("expected response to be cached")
+	}
+	if binary.BigEndian.Uint16(cached[:2]) != 0x1234 {
+		t.Fatalf("expected cached response id to be patched, got=%#x", binary.BigEndian.Uint16(cached[:2]))
+	}
+}
+
+func TestDispatchDNSQueryDoesNotCacheServerFailures(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
+	}
+
+	c := New(config.ClientConfig{
+		LocalDNSCacheMaxRecords:   8,
+		LocalDNSCacheTTLSeconds:   60,
+		LocalDNSPendingTimeoutSec: 5,
+	}, nil, codec)
+	now := time.Unix(1700000000, 0)
+	c.now = func() time.Time { return now }
+	c.connections = []Connection{{
+		Domain:        "v.example.com",
+		Resolver:      "127.0.0.1",
+		ResolverPort:  5353,
+		ResolverLabel: "127.0.0.1:5353",
+		Key:           "127.0.0.1|5353|v.example.com",
+		IsValid:       true,
+	}}
+	c.connectionsByKey = map[string]int{c.connections[0].Key: 0}
+	c.rebuildBalancer()
+	c.sessionID = 7
+	c.sessionCookie = 9
+
+	rawQuery := buildClientTestDNSQuery(0x1234, "example.com", Enums.DNS_RECORD_TYPE_A, Enums.DNSQ_CLASS_IN)
+	serverFailure, err := DnsParser.BuildServerFailureResponse(rawQuery)
+	if err != nil {
+		t.Fatalf("BuildServerFailureResponse returned error: %v", err)
+	}
+
+	c.exchangeQueryFn = func(conn Connection, packet []byte, timeout time.Duration) ([]byte, error) {
+		queryPacket, err := DnsParser.ParsePacketLite(packet)
+		if err != nil || !queryPacket.HasQuestion {
+			t.Fatalf("unexpected tunnel dns query: err=%v", err)
+		}
+		vpnPacket, err := VpnProto.ParseFromLabels(extractTestTunnelLabels(queryPacket.FirstQuestion.Name, "v.example.com"), c.codec)
+		if err != nil {
+			t.Fatalf("ParseFromLabels returned error: %v", err)
+		}
+		return DnsParser.BuildVPNResponsePacket(packet, queryPacket.FirstQuestion.Name, VpnProto.Packet{
+			SessionID:      c.sessionID,
+			SessionCookie:  c.sessionCookie,
+			PacketType:     Enums.PACKET_DNS_QUERY_RES,
+			StreamID:       0,
+			SequenceNum:    vpnPacket.SequenceNum,
+			FragmentID:     0,
+			TotalFragments: 1,
+			Payload:        serverFailure,
+		}, false)
+	}
+
+	request := &dnsDispatchRequest{
+		CacheKey: dnscache.BuildKey("example.com", Enums.DNS_RECORD_TYPE_A, Enums.DNSQ_CLASS_IN),
+		Query:    rawQuery,
+		Domain:   "example.com",
+		QType:    Enums.DNS_RECORD_TYPE_A,
+		QClass:   Enums.DNSQ_CLASS_IN,
+	}
+
+	response, err := c.dispatchDNSQuery(request)
+	if err != nil {
+		t.Fatalf("dispatchDNSQuery returned error: %v", err)
+	}
+	if string(response) != string(serverFailure) {
+		t.Fatal("unexpected dns failure payload")
+	}
+
+	if _, ok := c.LocalDNSCache().GetReady(request.CacheKey, rawQuery, now); ok {
+		t.Fatal("server failure responses must not be cached")
+	}
+}
+
+func TestDispatchDNSQueryFailsWithoutValidConnections(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
+	}
+	c := New(config.ClientConfig{}, nil, codec)
+	c.sessionID = 7
+	c.sessionCookie = 9
+
+	_, dispatchErr := c.dispatchDNSQuery(&dnsDispatchRequest{
+		CacheKey: []byte("key"),
+		Query:    []byte{1},
+	})
+	if !errors.Is(dispatchErr, ErrNoValidConnections) {
+		t.Fatalf("unexpected error: %v", dispatchErr)
+	}
+}
+
+func extractTestTunnelLabels(qName string, baseDomain string) string {
+	suffix := "." + baseDomain
+	if len(qName) <= len(suffix) || qName[len(qName)-len(suffix):] != suffix {
+		return ""
+	}
+	labels := qName[:len(qName)-len(suffix)]
+	out := make([]byte, 0, len(labels))
+	for i := 0; i < len(labels); i++ {
+		if labels[i] != '.' {
+			out = append(out, labels[i])
+		}
+	}
+	return string(out)
 }
 
 func buildClientTestDNSQuery(id uint16, name string, qType uint16, qClass uint16) []byte {

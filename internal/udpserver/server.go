@@ -354,6 +354,8 @@ func (s *Server) handleTunnelCandidate(packet []byte, parsed DnsParser.LitePacke
 		return s.handleMTUUpRequest(packet, parsed, decision, vpnPacket)
 	case Enums.PACKET_MTU_DOWN_REQ:
 		return s.handleMTUDownRequest(packet, parsed, decision, vpnPacket)
+	case Enums.PACKET_DNS_QUERY_REQ:
+		return s.handleDNSQueryRequest(packet, decision, vpnPacket)
 	default:
 		return buildNoDataResponseLite(packet, parsed)
 	}
@@ -544,6 +546,75 @@ func (s *Server) handleMTUDownRequest(questionPacket []byte, _ DnsParser.LitePac
 		TotalFragments: vpnPacket.TotalFragments,
 		Payload:        payload,
 	}, baseEncode)
+	if err != nil {
+		return nil
+	}
+	return response
+}
+
+func (s *Server) handleDNSQueryRequest(questionPacket []byte, decision domainmatcher.Decision, vpnPacket VpnProto.Packet) []byte {
+	sessionRecord, ok := s.sessions.Active(vpnPacket.SessionID)
+	if !ok {
+		return nil
+	}
+
+	if vpnPacket.StreamID != 0 || !vpnPacket.HasSequenceNum {
+		return nil
+	}
+
+	rawResponse := s.buildDNSQueryResponsePayload(vpnPacket.Payload)
+	if len(rawResponse) == 0 {
+		return nil
+	}
+
+	response, err := DnsParser.BuildVPNResponsePacket(questionPacket, decision.RequestName, VpnProto.Packet{
+		SessionID:       sessionRecord.ID,
+		SessionCookie:   sessionRecord.Cookie,
+		PacketType:      Enums.PACKET_DNS_QUERY_RES,
+		StreamID:        0,
+		SequenceNum:     vpnPacket.SequenceNum,
+		FragmentID:      0,
+		TotalFragments:  1,
+		CompressionType: sessionRecord.DownloadCompression,
+		Payload:         rawResponse,
+	}, sessionRecord.ResponseMode == mtuProbeModeBase64)
+	if err != nil {
+		return nil
+	}
+	return response
+}
+
+func (s *Server) buildDNSQueryResponsePayload(rawQuery []byte) []byte {
+	if !DnsParser.LooksLikeDNSRequest(rawQuery) {
+		return nil
+	}
+
+	parsed, err := DnsParser.ParsePacketLite(rawQuery)
+	if err != nil {
+		response, responseErr := DnsParser.BuildFormatErrorResponse(rawQuery)
+		if responseErr != nil {
+			return nil
+		}
+		return response
+	}
+
+	if !parsed.HasQuestion {
+		response, responseErr := DnsParser.BuildFormatErrorResponseFromLite(rawQuery, parsed)
+		if responseErr != nil {
+			return nil
+		}
+		return response
+	}
+
+	if parsed.FirstQuestion.Class != Enums.DNSQ_CLASS_IN {
+		response, responseErr := DnsParser.BuildNotImplementedResponseFromLite(rawQuery, parsed)
+		if responseErr != nil {
+			return nil
+		}
+		return response
+	}
+
+	response, err := DnsParser.BuildServerFailureResponseFromLite(rawQuery, parsed)
 	if err != nil {
 		return nil
 	}
