@@ -10,7 +10,7 @@ package dnsparser
 import (
 	"encoding/binary"
 
-	"masterdnsvpn-go/internal/enums"
+	ENUMS "masterdnsvpn-go/internal/enums"
 )
 
 const (
@@ -21,27 +21,27 @@ const (
 )
 
 func BuildEmptyNoErrorResponse(request []byte) ([]byte, error) {
-	return buildResponseWithRCode(request, enums.DNSRCodeNoError)
+	return buildResponseWithRCode(request, ENUMS.DNSRCodeNoError)
 }
 
 func BuildEmptyNoErrorResponseFromLite(request []byte, parsed LitePacket) ([]byte, error) {
-	return buildResponseWithRCodeLite(request, parsed, enums.DNSRCodeNoError)
+	return buildResponseWithRCodeLite(request, parsed, ENUMS.DNSRCodeNoError)
 }
 
 func BuildFormatErrorResponse(request []byte) ([]byte, error) {
-	return buildResponseWithRCode(request, enums.DNSRCodeFormatError)
+	return buildResponseWithRCode(request, ENUMS.DNSRCodeFormatError)
 }
 
 func BuildFormatErrorResponseFromLite(request []byte, parsed LitePacket) ([]byte, error) {
-	return buildResponseWithRCodeLite(request, parsed, enums.DNSRCodeFormatError)
+	return buildResponseWithRCodeLite(request, parsed, ENUMS.DNSRCodeFormatError)
 }
 
 func BuildRefusedResponse(request []byte) ([]byte, error) {
-	return buildResponseWithRCode(request, enums.DNSRCodeRefused)
+	return buildResponseWithRCode(request, ENUMS.DNSRCodeRefused)
 }
 
 func BuildRefusedResponseFromLite(request []byte, parsed LitePacket) ([]byte, error) {
-	return buildResponseWithRCodeLite(request, parsed, enums.DNSRCodeRefused)
+	return buildResponseWithRCodeLite(request, parsed, ENUMS.DNSRCodeRefused)
 }
 
 func buildResponseWithRCode(request []byte, rcode uint8) ([]byte, error) {
@@ -288,7 +288,7 @@ func extractRawOPTRecords(data []byte, offset int, count int) ([][]byte, int, er
 			return nil, offset, ErrInvalidAnswer
 		}
 
-		if recordType == enums.DNSRecordTypeOPT {
+		if recordType == ENUMS.DNSRecordTypeOPT {
 			records = append(records, data[recordStart:recordEnd])
 		}
 

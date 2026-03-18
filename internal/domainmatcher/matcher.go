@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"masterdnsvpn-go/internal/dnsparser"
-	"masterdnsvpn-go/internal/enums"
+	DnsParser "masterdnsvpn-go/internal/dnsparser"
+	ENUMS "masterdnsvpn-go/internal/enums"
 )
 
 type Action uint8
@@ -26,7 +26,7 @@ const (
 type Decision struct {
 	Action       Action
 	Reason       string
-	Question     dnsparser.Question
+	Question     DnsParser.Question
 	RequestName  string
 	BaseDomain   string
 	Labels       string
@@ -67,7 +67,7 @@ func (m *Matcher) Domains() []string {
 	return domains
 }
 
-func (m *Matcher) Match(parsed dnsparser.LitePacket) Decision {
+func (m *Matcher) Match(parsed DnsParser.LitePacket) Decision {
 	if len(parsed.Questions) == 0 {
 		return Decision{Action: ActionFormatError, Reason: "missing-question"}
 	}
@@ -89,7 +89,7 @@ func (m *Matcher) Match(parsed dnsparser.LitePacket) Decision {
 		}
 	}
 
-	if q0.Type != enums.DNSRecordTypeTXT {
+	if q0.Type != ENUMS.DNSRecordTypeTXT {
 		return Decision{
 			Action:       ActionNoData,
 			Reason:       "unsupported-qtype",

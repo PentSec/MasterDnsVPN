@@ -93,3 +93,16 @@ func MaxHeaderRawSize() int {
 	}
 	return maxSize
 }
+
+func MaxHeaderPacketType() uint8 {
+	var bestType uint8
+	maxSize := 0
+	for packetType := range len(packetFlags) {
+		size := HeaderRawSize(uint8(packetType))
+		if size > maxSize {
+			maxSize = size
+			bestType = uint8(packetType)
+		}
+	}
+	return bestType
+}

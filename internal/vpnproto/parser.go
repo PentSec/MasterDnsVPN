@@ -10,7 +10,7 @@ package vpnproto
 import (
 	"errors"
 
-	"masterdnsvpn-go/internal/enums"
+	ENUMS "masterdnsvpn-go/internal/enums"
 	"masterdnsvpn-go/internal/security"
 )
 
@@ -219,86 +219,86 @@ func buildPacketFlags() [256]uint8 {
 	}
 
 	validOnly := [...]uint8{
-		enums.PacketMTUUpRes,
-		enums.PacketMTUDownReq,
-		enums.PacketSessionInit,
-		enums.PacketSessionAccept,
-		enums.PacketSetMTUReq,
-		enums.PacketSetMTURes,
-		enums.PacketPing,
-		enums.PacketPong,
-		enums.PacketErrorDrop,
+		ENUMS.PacketMTUUpRes,
+		ENUMS.PacketMTUDownReq,
+		ENUMS.PacketSessionInit,
+		ENUMS.PacketSessionAccept,
+		ENUMS.PacketSetMTUReq,
+		ENUMS.PacketSetMTURes,
+		ENUMS.PacketPing,
+		ENUMS.PacketPong,
+		ENUMS.PacketErrorDrop,
 	}
 	for _, packetType := range validOnly {
 		setValid(packetType)
 	}
 
 	streamAndSeq := [...]uint8{
-		enums.PacketStreamSyn,
-		enums.PacketStreamSynAck,
-		enums.PacketStreamData,
-		enums.PacketStreamDataAck,
-		enums.PacketStreamResend,
-		enums.PacketStreamFin,
-		enums.PacketStreamFinAck,
-		enums.PacketStreamRST,
-		enums.PacketStreamRSTAck,
-		enums.PacketStreamKeepalive,
-		enums.PacketStreamKeepaliveAck,
-		enums.PacketStreamWindowUpdate,
-		enums.PacketStreamWindowUpdateAck,
-		enums.PacketStreamProbe,
-		enums.PacketStreamProbeAck,
-		enums.PacketMTUUpReq,
-		enums.PacketMTUDownRes,
-		enums.PacketSocks5Syn,
-		enums.PacketSocks5SynAck,
-		enums.PacketSocks5ConnectFail,
-		enums.PacketSocks5ConnectFailAck,
-		enums.PacketSocks5RulesetDenied,
-		enums.PacketSocks5RulesetDeniedAck,
-		enums.PacketSocks5NetworkUnreachable,
-		enums.PacketSocks5NetworkUnreachableAck,
-		enums.PacketSocks5HostUnreachable,
-		enums.PacketSocks5HostUnreachableAck,
-		enums.PacketSocks5ConnectionRefused,
-		enums.PacketSocks5ConnectionRefusedAck,
-		enums.PacketSocks5TTLExpired,
-		enums.PacketSocks5TTLExpiredAck,
-		enums.PacketSocks5CommandUnsupported,
-		enums.PacketSocks5CommandUnsupportedAck,
-		enums.PacketSocks5AddressTypeUnsupported,
-		enums.PacketSocks5AddressTypeUnsupportedAck,
-		enums.PacketSocks5AuthFailed,
-		enums.PacketSocks5AuthFailedAck,
-		enums.PacketSocks5UpstreamUnavailable,
-		enums.PacketSocks5UpstreamUnavailableAck,
-		enums.PacketDNSQueryReq,
-		enums.PacketDNSQueryRes,
+		ENUMS.PacketStreamSyn,
+		ENUMS.PacketStreamSynAck,
+		ENUMS.PacketStreamData,
+		ENUMS.PacketStreamDataAck,
+		ENUMS.PacketStreamResend,
+		ENUMS.PacketStreamFin,
+		ENUMS.PacketStreamFinAck,
+		ENUMS.PacketStreamRST,
+		ENUMS.PacketStreamRSTAck,
+		ENUMS.PacketStreamKeepalive,
+		ENUMS.PacketStreamKeepaliveAck,
+		ENUMS.PacketStreamWindowUpdate,
+		ENUMS.PacketStreamWindowUpdateAck,
+		ENUMS.PacketStreamProbe,
+		ENUMS.PacketStreamProbeAck,
+		ENUMS.PacketMTUUpReq,
+		ENUMS.PacketMTUDownRes,
+		ENUMS.PacketSocks5Syn,
+		ENUMS.PacketSocks5SynAck,
+		ENUMS.PacketSocks5ConnectFail,
+		ENUMS.PacketSocks5ConnectFailAck,
+		ENUMS.PacketSocks5RulesetDenied,
+		ENUMS.PacketSocks5RulesetDeniedAck,
+		ENUMS.PacketSocks5NetworkUnreachable,
+		ENUMS.PacketSocks5NetworkUnreachableAck,
+		ENUMS.PacketSocks5HostUnreachable,
+		ENUMS.PacketSocks5HostUnreachableAck,
+		ENUMS.PacketSocks5ConnectionRefused,
+		ENUMS.PacketSocks5ConnectionRefusedAck,
+		ENUMS.PacketSocks5TTLExpired,
+		ENUMS.PacketSocks5TTLExpiredAck,
+		ENUMS.PacketSocks5CommandUnsupported,
+		ENUMS.PacketSocks5CommandUnsupportedAck,
+		ENUMS.PacketSocks5AddressTypeUnsupported,
+		ENUMS.PacketSocks5AddressTypeUnsupportedAck,
+		ENUMS.PacketSocks5AuthFailed,
+		ENUMS.PacketSocks5AuthFailedAck,
+		ENUMS.PacketSocks5UpstreamUnavailable,
+		ENUMS.PacketSocks5UpstreamUnavailableAck,
+		ENUMS.PacketDNSQueryReq,
+		ENUMS.PacketDNSQueryRes,
 	}
 	for _, packetType := range streamAndSeq {
 		set(packetType, packetFlagStream|packetFlagSequence)
 	}
 
 	frag := [...]uint8{
-		enums.PacketStreamData,
-		enums.PacketStreamResend,
-		enums.PacketMTUUpReq,
-		enums.PacketMTUDownRes,
-		enums.PacketSocks5Syn,
-		enums.PacketDNSQueryReq,
-		enums.PacketDNSQueryRes,
+		ENUMS.PacketStreamData,
+		ENUMS.PacketStreamResend,
+		ENUMS.PacketMTUUpReq,
+		ENUMS.PacketMTUDownRes,
+		ENUMS.PacketSocks5Syn,
+		ENUMS.PacketDNSQueryReq,
+		ENUMS.PacketDNSQueryRes,
 	}
 	for _, packetType := range frag {
 		flags[packetType] |= packetFlagFragment
 	}
 
 	comp := [...]uint8{
-		enums.PacketStreamData,
-		enums.PacketStreamResend,
-		enums.PacketPackedControlBlocks,
-		enums.PacketDNSQueryReq,
-		enums.PacketDNSQueryRes,
+		ENUMS.PacketStreamData,
+		ENUMS.PacketStreamResend,
+		ENUMS.PacketPackedControlBlocks,
+		ENUMS.PacketDNSQueryReq,
+		ENUMS.PacketDNSQueryRes,
 	}
 	for _, packetType := range comp {
 		flags[packetType] |= packetFlagValid | packetFlagCompression

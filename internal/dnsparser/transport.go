@@ -14,8 +14,8 @@ import (
 	"strings"
 
 	"masterdnsvpn-go/internal/basecodec"
-	"masterdnsvpn-go/internal/enums"
-	"masterdnsvpn-go/internal/vpnproto"
+	ENUMS "masterdnsvpn-go/internal/enums"
+	VPNProto "masterdnsvpn-go/internal/vpnproto"
 )
 
 var (
@@ -58,13 +58,13 @@ func BuildTXTQuestionPacket(name string, qType uint16, ednsUDPSize uint16) ([]by
 	offset := dnsHeaderSize
 	offset += copy(packet[offset:], qname)
 	binary.BigEndian.PutUint16(packet[offset:offset+2], qType)
-	binary.BigEndian.PutUint16(packet[offset+2:offset+4], enums.DNSQClassIN)
+	binary.BigEndian.PutUint16(packet[offset+2:offset+4], ENUMS.DNSQClassIN)
 	offset += 4
 
 	if ednsUDPSize > 0 {
 		packet[offset] = 0x00
 		offset++
-		binary.BigEndian.PutUint16(packet[offset:offset+2], enums.DNSRecordTypeOPT)
+		binary.BigEndian.PutUint16(packet[offset:offset+2], ENUMS.DNSRecordTypeOPT)
 		offset += 2
 		binary.BigEndian.PutUint16(packet[offset:offset+2], ednsUDPSize)
 		offset += 2
@@ -101,7 +101,7 @@ func BuildTXTResponsePacket(questionPacket []byte, answerName string, answerPayl
 
 	response := make([]byte, dnsHeaderSize+len(questionBytes)+answerLen+rawRecordsLen(optRecords))
 	binary.BigEndian.PutUint16(response[0:2], header.ID)
-	binary.BigEndian.PutUint16(response[2:4], buildResponseFlags(header.Flags, enums.DNSRCodeNoError))
+	binary.BigEndian.PutUint16(response[2:4], buildResponseFlags(header.Flags, ENUMS.DNSRCodeNoError))
 	binary.BigEndian.PutUint16(response[4:6], questionCount)
 	binary.BigEndian.PutUint16(response[6:8], uint16(len(answerPayloads)))
 	binary.BigEndian.PutUint16(response[8:10], 0)
@@ -118,8 +118,8 @@ func BuildTXTResponsePacket(questionPacket []byte, answerName string, answerPayl
 		} else {
 			offset += copy(response[offset:], nameBytes)
 		}
-		binary.BigEndian.PutUint16(response[offset:offset+2], enums.DNSRecordTypeTXT)
-		binary.BigEndian.PutUint16(response[offset+2:offset+4], enums.DNSQClassIN)
+		binary.BigEndian.PutUint16(response[offset:offset+2], ENUMS.DNSRecordTypeTXT)
+		binary.BigEndian.PutUint16(response[offset+2:offset+4], ENUMS.DNSQClassIN)
 		binary.BigEndian.PutUint32(response[offset+4:offset+8], 0)
 		binary.BigEndian.PutUint16(response[offset+8:offset+10], uint16(len(payload)))
 		offset += 10
@@ -133,8 +133,8 @@ func BuildTXTResponsePacket(questionPacket []byte, answerName string, answerPayl
 	return response, nil
 }
 
-func BuildVPNResponsePacket(questionPacket []byte, answerName string, packet vpnproto.Packet, baseEncode bool) ([]byte, error) {
-	rawFrame, err := vpnproto.BuildRaw(vpnproto.BuildOptions{
+func BuildVPNResponsePacket(questionPacket []byte, answerName string, packet VPNProto.Packet, baseEncode bool) ([]byte, error) {
+	rawFrame, err := VPNProto.BuildRaw(VPNProto.BuildOptions{
 		SessionID:       packet.SessionID,
 		PacketType:      packet.PacketType,
 		SessionCookie:   packet.SessionCookie,
@@ -156,15 +156,15 @@ func BuildVPNResponsePacket(questionPacket []byte, answerName string, packet vpn
 	return BuildTXTResponsePacket(questionPacket, answerName, answerPayloads)
 }
 
-func ExtractVPNResponse(packet []byte, baseEncoded bool) (vpnproto.Packet, error) {
+func ExtractVPNResponse(packet []byte, baseEncoded bool) (VPNProto.Packet, error) {
 	parsed, err := ParsePacket(packet)
 	if err != nil {
-		return vpnproto.Packet{}, err
+		return VPNProto.Packet{}, err
 	}
 
 	rawAnswers := extractTXTAnswerPayloads(parsed)
 	if len(rawAnswers) == 0 {
-		return vpnproto.Packet{}, ErrTXTAnswerMissing
+		return VPNProto.Packet{}, ErrTXTAnswerMissing
 	}
 
 	return assembleVPNResponse(rawAnswers, baseEncoded)
@@ -248,7 +248,7 @@ func buildTXTAnswerChunks(rawFrame []byte, baseEncode bool) ([][]byte, error) {
 		return [][]byte{encodeChunk(rawFrame)}, nil
 	}
 
-	header, err := vpnproto.Parse(rawFrame)
+	header, err := VPNProto.Parse(rawFrame)
 	if err != nil {
 		return [][]byte{encodeChunk(rawFrame)}, nil
 	}
@@ -321,7 +321,7 @@ func extractTXTAnswerPayloads(parsed Packet) [][]byte {
 
 	payloads := make([][]byte, 0, len(parsed.Answers))
 	for _, answer := range parsed.Answers {
-		if answer.Type != enums.DNSRecordTypeTXT {
+		if answer.Type != ENUMS.DNSRecordTypeTXT {
 			continue
 		}
 		raw := extractTXTBytes(answer.RData)
@@ -355,30 +355,30 @@ func extractTXTBytes(rData []byte) []byte {
 	return out
 }
 
-func assembleVPNResponse(rawAnswers [][]byte, baseEncoded bool) (vpnproto.Packet, error) {
+func assembleVPNResponse(rawAnswers [][]byte, baseEncoded bool) (VPNProto.Packet, error) {
 	if len(rawAnswers) == 1 {
 		raw := rawAnswers[0]
 		if baseEncoded {
 			decoded, err := basecodec.DecodeRawBase64(raw)
 			if err != nil {
-				return vpnproto.Packet{}, err
+				return VPNProto.Packet{}, err
 			}
 			raw = decoded
 		}
-		return vpnproto.Parse(raw)
+		return VPNProto.Parse(raw)
 	}
 
 	var chunks [256][]byte
 	totalExpected := 0
 	seenChunks := 0
-	var header vpnproto.Packet
+	var header VPNProto.Packet
 	headerSeen := false
 
 	for _, raw := range rawAnswers {
 		if baseEncoded {
 			decoded, err := basecodec.DecodeRawBase64(raw)
 			if err != nil {
-				return vpnproto.Packet{}, err
+				return VPNProto.Packet{}, err
 			}
 			raw = decoded
 		}
@@ -388,15 +388,15 @@ func assembleVPNResponse(rawAnswers [][]byte, baseEncoded bool) (vpnproto.Packet
 
 		if raw[0] == 0x00 {
 			if len(raw) < 3 {
-				return vpnproto.Packet{}, ErrTXTAnswerMalformed
+				return VPNProto.Packet{}, ErrTXTAnswerMalformed
 			}
 			totalExpected = int(raw[1])
 			if totalExpected <= 0 || totalExpected > len(chunks) {
-				return vpnproto.Packet{}, ErrTXTAnswerMalformed
+				return VPNProto.Packet{}, ErrTXTAnswerMalformed
 			}
-			parsed, err := vpnproto.ParseAtOffset(raw, 2)
+			parsed, err := VPNProto.ParseAtOffset(raw, 2)
 			if err != nil {
-				return vpnproto.Packet{}, err
+				return VPNProto.Packet{}, err
 			}
 			header = parsed
 			headerSeen = true
@@ -409,7 +409,7 @@ func assembleVPNResponse(rawAnswers [][]byte, baseEncoded bool) (vpnproto.Packet
 
 		chunkID := int(raw[0])
 		if chunkID >= len(chunks) {
-			return vpnproto.Packet{}, ErrTXTAnswerMalformed
+			return VPNProto.Packet{}, ErrTXTAnswerMalformed
 		}
 		if chunks[chunkID] == nil {
 			seenChunks++
@@ -418,16 +418,16 @@ func assembleVPNResponse(rawAnswers [][]byte, baseEncoded bool) (vpnproto.Packet
 	}
 
 	if !headerSeen || totalExpected <= 0 || seenChunks != totalExpected {
-		return vpnproto.Packet{}, ErrTXTAnswerMalformed
+		return VPNProto.Packet{}, ErrTXTAnswerMalformed
 	}
 	for i := range totalExpected {
 		if chunks[i] == nil {
-			return vpnproto.Packet{}, ErrTXTAnswerMalformed
+			return VPNProto.Packet{}, ErrTXTAnswerMalformed
 		}
 	}
 	for i := totalExpected; i < len(chunks); i++ {
 		if chunks[i] != nil {
-			return vpnproto.Packet{}, ErrTXTAnswerMalformed
+			return VPNProto.Packet{}, ErrTXTAnswerMalformed
 		}
 	}
 

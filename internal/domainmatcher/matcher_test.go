@@ -10,14 +10,14 @@ package domainmatcher
 import (
 	"testing"
 
-	"masterdnsvpn-go/internal/dnsparser"
-	"masterdnsvpn-go/internal/enums"
+	DnsParser "masterdnsvpn-go/internal/dnsparser"
+	ENUMS "masterdnsvpn-go/internal/enums"
 )
 
 func TestMatcherReturnsNoDataForUnauthorizedDomain(t *testing.T) {
 	matcher := New([]string{"a.com", "c.b.com", "cc.com"}, 3)
 
-	decision := matcher.Match(litePacketWithQuestion("evil.com", enums.DNSRecordTypeTXT))
+	decision := matcher.Match(litePacketWithQuestion("evil.com", ENUMS.DNSRecordTypeTXT))
 	if decision.Action != ActionNoData {
 		t.Fatalf("unexpected action: got=%d want=%d", decision.Action, ActionNoData)
 	}
@@ -29,7 +29,7 @@ func TestMatcherReturnsNoDataForUnauthorizedDomain(t *testing.T) {
 func TestMatcherReturnsNoDataForExactAllowedDomain(t *testing.T) {
 	matcher := New([]string{"a.com", "c.b.com", "cc.com"}, 3)
 
-	decision := matcher.Match(litePacketWithQuestion("c.b.com", enums.DNSRecordTypeTXT))
+	decision := matcher.Match(litePacketWithQuestion("c.b.com", ENUMS.DNSRecordTypeTXT))
 	if decision.Action != ActionNoData {
 		t.Fatalf("unexpected action: got=%d want=%d", decision.Action, ActionNoData)
 	}
@@ -41,7 +41,7 @@ func TestMatcherReturnsNoDataForExactAllowedDomain(t *testing.T) {
 func TestMatcherReturnsNoDataForUnsupportedType(t *testing.T) {
 	matcher := New([]string{"a.com"}, 3)
 
-	decision := matcher.Match(litePacketWithQuestion("vpn.a.com", enums.DNSRecordTypeA))
+	decision := matcher.Match(litePacketWithQuestion("vpn.a.com", ENUMS.DNSRecordTypeA))
 	if decision.Action != ActionNoData {
 		t.Fatalf("unexpected action: got=%d want=%d", decision.Action, ActionNoData)
 	}
@@ -53,7 +53,7 @@ func TestMatcherReturnsNoDataForUnsupportedType(t *testing.T) {
 func TestMatcherReturnsProcessForTXTWithExtraLabels(t *testing.T) {
 	matcher := New([]string{"a.com", "c.b.com", "cc.com"}, 3)
 
-	decision := matcher.Match(litePacketWithQuestion("vpn-01.c.b.com", enums.DNSRecordTypeTXT))
+	decision := matcher.Match(litePacketWithQuestion("vpn-01.c.b.com", ENUMS.DNSRecordTypeTXT))
 	if decision.Action != ActionProcess {
 		t.Fatalf("unexpected action: got=%d want=%d", decision.Action, ActionProcess)
 	}
@@ -68,7 +68,7 @@ func TestMatcherReturnsProcessForTXTWithExtraLabels(t *testing.T) {
 func TestMatcherPreservesMultipleLabels(t *testing.T) {
 	matcher := New([]string{"a.com"}, 3)
 
-	decision := matcher.Match(litePacketWithQuestion("aa.bb.a.com", enums.DNSRecordTypeTXT))
+	decision := matcher.Match(litePacketWithQuestion("aa.bb.a.com", ENUMS.DNSRecordTypeTXT))
 	if decision.Action != ActionProcess {
 		t.Fatalf("unexpected action: got=%d want=%d", decision.Action, ActionProcess)
 	}
@@ -80,7 +80,7 @@ func TestMatcherPreservesMultipleLabels(t *testing.T) {
 func TestMatcherRespectsBoundaryBeforeSuffix(t *testing.T) {
 	matcher := New([]string{"a.com"}, 3)
 
-	decision := matcher.Match(litePacketWithQuestion("notreallya.com", enums.DNSRecordTypeTXT))
+	decision := matcher.Match(litePacketWithQuestion("notreallya.com", ENUMS.DNSRecordTypeTXT))
 	if decision.Action != ActionNoData {
 		t.Fatalf("unexpected action: got=%d want=%d", decision.Action, ActionNoData)
 	}
@@ -89,16 +89,16 @@ func TestMatcherRespectsBoundaryBeforeSuffix(t *testing.T) {
 	}
 }
 
-func litePacketWithQuestion(name string, qtype uint16) dnsparser.LitePacket {
-	question := dnsparser.Question{
+func litePacketWithQuestion(name string, qtype uint16) DnsParser.LitePacket {
+	question := DnsParser.Question{
 		Name:  name,
 		Type:  qtype,
-		Class: enums.DNSQClassIN,
+		Class: ENUMS.DNSQClassIN,
 	}
 
-	return dnsparser.LitePacket{
-		Header:        dnsparser.Header{QDCount: 1},
-		Questions:     []dnsparser.Question{question},
+	return DnsParser.LitePacket{
+		Header:        DnsParser.Header{QDCount: 1},
+		Questions:     []DnsParser.Question{question},
 		FirstQuestion: question,
 		HasQuestion:   true,
 	}

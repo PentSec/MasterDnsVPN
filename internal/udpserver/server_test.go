@@ -13,10 +13,10 @@ import (
 	"testing"
 
 	"masterdnsvpn-go/internal/config"
-	"masterdnsvpn-go/internal/dnsparser"
-	"masterdnsvpn-go/internal/enums"
+	DnsParser "masterdnsvpn-go/internal/dnsparser"
+	ENUMS "masterdnsvpn-go/internal/enums"
 	"masterdnsvpn-go/internal/security"
-	"masterdnsvpn-go/internal/vpnproto"
+	VPNProto "masterdnsvpn-go/internal/vpnproto"
 )
 
 func TestHandlePacketDropsDNSResponses(t *testing.T) {
@@ -26,7 +26,7 @@ func TestHandlePacketDropsDNSResponses(t *testing.T) {
 		MinVPNLabelLength: 3,
 	}, nil, nil)
 
-	packet := buildServerTestQuery(0x1001, "vpn.a.com", enums.DNSRecordTypeTXT)
+	packet := buildServerTestQuery(0x1001, "vpn.a.com", ENUMS.DNSRecordTypeTXT)
 	packet[2] |= 0x80
 
 	if response := srv.handlePacket(packet); response != nil {
@@ -41,7 +41,7 @@ func TestHandlePacketReturnsNoDataForUnauthorizedDomain(t *testing.T) {
 		MinVPNLabelLength: 3,
 	}, nil, nil)
 
-	packet := buildServerTestQuery(0x2002, "evil.com", enums.DNSRecordTypeTXT)
+	packet := buildServerTestQuery(0x2002, "evil.com", ENUMS.DNSRecordTypeTXT)
 	response := srv.handlePacket(packet)
 	if len(response) == 0 {
 		t.Fatal("handlePacket should return a DNS response for unauthorized DNS queries")
@@ -51,8 +51,8 @@ func TestHandlePacketReturnsNoDataForUnauthorizedDomain(t *testing.T) {
 		t.Fatalf("unexpected response id: got=%#x want=%#x", got, 0x2002)
 	}
 	flags := binary.BigEndian.Uint16(response[2:4])
-	if flags&0x000F != enums.DNSRCodeNoError {
-		t.Fatalf("unexpected rcode: got=%d want=%d", flags&0x000F, enums.DNSRCodeNoError)
+	if flags&0x000F != ENUMS.DNSRCodeNoError {
+		t.Fatalf("unexpected rcode: got=%d want=%d", flags&0x000F, ENUMS.DNSRCodeNoError)
 	}
 }
 
@@ -68,24 +68,30 @@ func TestHandlePacketRespondsToMTUUpProbe(t *testing.T) {
 		MinVPNLabelLength: 3,
 	}, nil, codec)
 
-	challenge := []byte("12345678")
-	payload := append([]byte{0}, challenge...)
+	verifyCode := []byte{0x11, 0x22, 0x33, 0x44}
+	payload := append([]byte{0}, verifyCode...)
 	payload = append(payload, bytes.Repeat([]byte{0xAB}, 64)...)
-	query := buildTunnelQuery(t, codec, "a.com", enums.PacketMTUUpReq, payload)
+	query := buildTunnelQuery(t, codec, "a.com", ENUMS.PacketMTUUpReq, payload)
 	response := srv.handlePacket(query)
 	if len(response) == 0 {
 		t.Fatal("handlePacket should return a vpn mtu-up response")
 	}
 
-	packet, err := dnsparser.ExtractVPNResponse(response, false)
+	packet, err := DnsParser.ExtractVPNResponse(response, false)
 	if err != nil {
 		t.Fatalf("ExtractVPNResponse returned error: %v", err)
 	}
-	if packet.PacketType != enums.PacketMTUUpRes {
-		t.Fatalf("unexpected packet type: got=%d want=%d", packet.PacketType, enums.PacketMTUUpRes)
+	if packet.PacketType != ENUMS.PacketMTUUpRes {
+		t.Fatalf("unexpected packet type: got=%d want=%d", packet.PacketType, ENUMS.PacketMTUUpRes)
 	}
-	if string(packet.Payload) != string(challenge) {
-		t.Fatalf("unexpected echoed challenge: got=%q want=%q", packet.Payload, challenge)
+	if len(packet.Payload) != 6 {
+		t.Fatalf("unexpected mtu-up response length: got=%d want=%d", len(packet.Payload), 6)
+	}
+	if !bytes.Equal(packet.Payload[:4], verifyCode) {
+		t.Fatalf("unexpected echoed verify code: got=%v want=%v", packet.Payload[:4], verifyCode)
+	}
+	if got := int(binary.BigEndian.Uint16(packet.Payload[4:6])); got != len(payload) {
+		t.Fatalf("unexpected echoed mtu size: got=%d want=%d", got, len(payload))
 	}
 }
 
@@ -101,28 +107,66 @@ func TestHandlePacketRespondsToMTUDownProbe(t *testing.T) {
 		MinVPNLabelLength: 3,
 	}, nil, codec)
 
-	challenge := []byte("12345678")
-	payload := make([]byte, 13)
-	binary.BigEndian.PutUint32(payload[1:5], 128)
-	copy(payload[5:], challenge)
-	query := buildTunnelQuery(t, codec, "a.com", enums.PacketMTUDownReq, payload)
+	verifyCode := []byte{0xAA, 0xBB, 0xCC, 0xDD}
+	payload := make([]byte, 128)
+	payload[0] = 0
+	copy(payload[1:5], verifyCode)
+	binary.BigEndian.PutUint16(payload[5:7], 128)
+	copy(payload[7:], bytes.Repeat([]byte{0xAB}, len(payload)-7))
+	query := buildTunnelQuery(t, codec, "a.com", ENUMS.PacketMTUDownReq, payload)
 	response := srv.handlePacket(query)
 	if len(response) == 0 {
 		t.Fatal("handlePacket should return a vpn mtu-down response")
 	}
 
-	packet, err := dnsparser.ExtractVPNResponse(response, false)
+	packet, err := DnsParser.ExtractVPNResponse(response, false)
 	if err != nil {
 		t.Fatalf("ExtractVPNResponse returned error: %v", err)
 	}
-	if packet.PacketType != enums.PacketMTUDownRes {
-		t.Fatalf("unexpected packet type: got=%d want=%d", packet.PacketType, enums.PacketMTUDownRes)
+	if packet.PacketType != ENUMS.PacketMTUDownRes {
+		t.Fatalf("unexpected packet type: got=%d want=%d", packet.PacketType, ENUMS.PacketMTUDownRes)
 	}
 	if len(packet.Payload) != 128 {
 		t.Fatalf("unexpected mtu-down payload length: got=%d want=%d", len(packet.Payload), 128)
 	}
-	if string(packet.Payload[:len(challenge)]) != string(challenge) {
-		t.Fatalf("unexpected mtu-down challenge prefix: got=%q want=%q", packet.Payload[:len(challenge)], challenge)
+	if !bytes.Equal(packet.Payload[:4], verifyCode) {
+		t.Fatalf("unexpected mtu-down verify prefix: got=%v want=%v", packet.Payload[:4], verifyCode)
+	}
+	if got := int(binary.BigEndian.Uint16(packet.Payload[4:6])); got != 128 {
+		t.Fatalf("unexpected mtu-down echoed size: got=%d want=%d", got, 128)
+	}
+}
+
+func TestHandlePacketRespondsToMTUUpProbeBaseEncoded(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
+	}
+
+	srv := New(config.ServerConfig{
+		MaxPacketSize:     65535,
+		Domain:            []string{"a.com"},
+		MinVPNLabelLength: 3,
+	}, nil, codec)
+
+	verifyCode := []byte{0x10, 0x20, 0x30, 0x40}
+	payload := append([]byte{1}, verifyCode...)
+	payload = append(payload, bytes.Repeat([]byte{0xAB}, 40)...)
+	query := buildTunnelQuery(t, codec, "a.com", ENUMS.PacketMTUUpReq, payload)
+	response := srv.handlePacket(query)
+	if len(response) == 0 {
+		t.Fatal("handlePacket should return a vpn mtu-up response")
+	}
+
+	packet, err := DnsParser.ExtractVPNResponse(response, true)
+	if err != nil {
+		t.Fatalf("ExtractVPNResponse returned error: %v", err)
+	}
+	if packet.PacketType != ENUMS.PacketMTUUpRes {
+		t.Fatalf("unexpected packet type: got=%d want=%d", packet.PacketType, ENUMS.PacketMTUUpRes)
+	}
+	if !bytes.Equal(packet.Payload[:4], verifyCode) {
+		t.Fatalf("unexpected echoed verify code: got=%v want=%v", packet.Payload[:4], verifyCode)
 	}
 }
 
@@ -136,7 +180,7 @@ func buildServerTestQuery(id uint16, name string, qtype uint16) []byte {
 	offset := 12
 	offset += copy(packet[offset:], qname)
 	binary.BigEndian.PutUint16(packet[offset:offset+2], qtype)
-	binary.BigEndian.PutUint16(packet[offset+2:offset+4], enums.DNSQClassIN)
+	binary.BigEndian.PutUint16(packet[offset+2:offset+4], ENUMS.DNSQClassIN)
 	return packet
 }
 
@@ -157,7 +201,7 @@ func encodeServerTestName(name string) []byte {
 func buildTunnelQuery(t *testing.T, codec *security.Codec, name string, packetType uint8, payload []byte) []byte {
 	t.Helper()
 
-	encoded, err := vpnproto.BuildEncoded(vpnproto.BuildOptions{
+	encoded, err := VPNProto.BuildEncoded(VPNProto.BuildOptions{
 		SessionID:      255,
 		PacketType:     packetType,
 		StreamID:       1,
@@ -169,12 +213,12 @@ func buildTunnelQuery(t *testing.T, codec *security.Codec, name string, packetTy
 		t.Fatalf("BuildEncoded returned error: %v", err)
 	}
 
-	questionName, err := dnsparser.BuildTunnelQuestionName(name, encoded)
+	questionName, err := DnsParser.BuildTunnelQuestionName(name, encoded)
 	if err != nil {
 		t.Fatalf("BuildTunnelQuestionName returned error: %v", err)
 	}
 
-	query, err := dnsparser.BuildTXTQuestionPacket(questionName, enums.DNSRecordTypeTXT, 4096)
+	query, err := DnsParser.BuildTXTQuestionPacket(questionName, ENUMS.DNSRecordTypeTXT, 4096)
 	if err != nil {
 		t.Fatalf("BuildTXTQuestionPacket returned error: %v", err)
 	}

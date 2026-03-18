@@ -11,7 +11,7 @@ import (
 	"bytes"
 	"testing"
 
-	"masterdnsvpn-go/internal/enums"
+	ENUMS "masterdnsvpn-go/internal/enums"
 	"masterdnsvpn-go/internal/security"
 )
 
@@ -53,14 +53,14 @@ func buildRawPacket(
 
 func TestParseSessionInitPacket(t *testing.T) {
 	payload := []byte("hello")
-	raw := buildRawPacket(t, 7, enums.PacketSessionInit, 0, 0, 0, 0, 0, 9, payload)
+	raw := buildRawPacket(t, 7, ENUMS.PacketSessionInit, 0, 0, 0, 0, 0, 9, payload)
 
 	parsed, err := Parse(raw)
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
 	}
 
-	if parsed.SessionID != 7 || parsed.PacketType != enums.PacketSessionInit {
+	if parsed.SessionID != 7 || parsed.PacketType != ENUMS.PacketSessionInit {
 		t.Fatalf("unexpected base fields: %+v", parsed)
 	}
 	if parsed.HasStreamID || parsed.HasSequenceNum || parsed.HasFragmentInfo || parsed.HasCompressionType {
@@ -76,7 +76,7 @@ func TestParseSessionInitPacket(t *testing.T) {
 
 func TestParseStreamDataPacket(t *testing.T) {
 	payload := []byte("vpn-data")
-	raw := buildRawPacket(t, 4, enums.PacketStreamData, 0x1122, 0x3344, 5, 9, 2, 7, payload)
+	raw := buildRawPacket(t, 4, ENUMS.PacketStreamData, 0x1122, 0x3344, 5, 9, 2, 7, payload)
 
 	parsed, err := Parse(raw)
 	if err != nil {
@@ -104,7 +104,7 @@ func TestParseStreamDataPacket(t *testing.T) {
 }
 
 func TestParseRejectsInvalidCheckByte(t *testing.T) {
-	raw := buildRawPacket(t, 1, enums.PacketPing, 0, 0, 0, 0, 0, 2, nil)
+	raw := buildRawPacket(t, 1, ENUMS.PacketPing, 0, 0, 0, 0, 0, 2, nil)
 	raw[len(raw)-1] ^= 0x01
 
 	if _, err := Parse(raw); err != ErrInvalidHeaderCheck {
@@ -119,7 +119,7 @@ func TestParseFromLabels(t *testing.T) {
 	}
 
 	payload := []byte("tunnel-payload")
-	raw := buildRawPacket(t, 3, enums.PacketDNSQueryReq, 100, 200, 1, 2, 1, 4, payload)
+	raw := buildRawPacket(t, 3, ENUMS.PacketDNSQueryReq, 100, 200, 1, 2, 1, 4, payload)
 	encoded, err := codec.EncryptAndEncodeLowerBase36(raw)
 	if err != nil {
 		t.Fatalf("EncryptAndEncodeLowerBase36 returned error: %v", err)
@@ -129,7 +129,7 @@ func TestParseFromLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseFromLabels returned error: %v", err)
 	}
-	if parsed.PacketType != enums.PacketDNSQueryReq || parsed.StreamID != 100 || parsed.SequenceNum != 200 {
+	if parsed.PacketType != ENUMS.PacketDNSQueryReq || parsed.StreamID != 100 || parsed.SequenceNum != 200 {
 		t.Fatalf("unexpected parsed fields: %+v", parsed)
 	}
 	if !bytes.Equal(parsed.Payload, payload) {

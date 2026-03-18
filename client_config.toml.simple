@@ -17,7 +17,8 @@ DOMAINS = ["v.domain.com"]
 # 0=Round Robin (default), 1=Random, 2=Round Robin, 3=Least Loss, 4=Lowest Latency
 RESOLVER_BALANCING_STRATEGY = 0
 
-# If true, server TXT payloads are returned as lower-base36 text.
+# If true, MTU test responses request Base64 TXT payloads from server.
+# If false, server returns raw byte TXT payloads.
 BASE_ENCODE_DATA = false
 
 # Encryption method:

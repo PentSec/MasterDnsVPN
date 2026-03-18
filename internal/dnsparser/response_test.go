@@ -11,11 +11,11 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"masterdnsvpn-go/internal/enums"
+	ENUMS "masterdnsvpn-go/internal/enums"
 )
 
 func TestBuildEmptyNoErrorResponsePreservesIDAndQuestion(t *testing.T) {
-	request := buildDNSQuery(0xBEEF, "example.com", enums.DNSRecordTypeA, false)
+	request := buildDNSQuery(0xBEEF, "example.com", ENUMS.DNSRecordTypeA, false)
 
 	response, err := BuildEmptyNoErrorResponse(request)
 	if err != nil {
@@ -59,7 +59,7 @@ func TestBuildEmptyNoErrorResponsePreservesIDAndQuestion(t *testing.T) {
 }
 
 func TestBuildEmptyNoErrorResponseMirrorsOPTRecord(t *testing.T) {
-	request := buildDNSQuery(0x1234, "example.com", enums.DNSRecordTypeTXT, true)
+	request := buildDNSQuery(0x1234, "example.com", ENUMS.DNSRecordTypeTXT, true)
 
 	response, err := BuildEmptyNoErrorResponse(request)
 	if err != nil {
@@ -77,8 +77,8 @@ func TestBuildEmptyNoErrorResponseMirrorsOPTRecord(t *testing.T) {
 	if len(parsed.Additional) != 1 {
 		t.Fatalf("unexpected additional record count: got=%d want=1", len(parsed.Additional))
 	}
-	if parsed.Additional[0].Type != enums.DNSRecordTypeOPT {
-		t.Fatalf("unexpected additional record type: got=%d want=%d", parsed.Additional[0].Type, enums.DNSRecordTypeOPT)
+	if parsed.Additional[0].Type != ENUMS.DNSRecordTypeOPT {
+		t.Fatalf("unexpected additional record type: got=%d want=%d", parsed.Additional[0].Type, ENUMS.DNSRecordTypeOPT)
 	}
 }
 
@@ -86,8 +86,8 @@ func TestBuildEmptyNoErrorResponseFromLitePreservesAllQuestions(t *testing.T) {
 	request := buildMultiQuestionDNSQuery(
 		0x7777,
 		[]liteQuestionSpec{
-			{Name: "example.com", Type: enums.DNSRecordTypeA, Class: enums.DNSQClassIN},
-			{Name: "example.net", Type: enums.DNSRecordTypeAAAA, Class: enums.DNSQClassIN},
+			{Name: "example.com", Type: ENUMS.DNSRecordTypeA, Class: ENUMS.DNSQClassIN},
+			{Name: "example.net", Type: ENUMS.DNSRecordTypeAAAA, Class: ENUMS.DNSQClassIN},
 		},
 		true,
 	)
@@ -113,7 +113,7 @@ func TestBuildEmptyNoErrorResponseFromLitePreservesAllQuestions(t *testing.T) {
 	if full.Questions[0].Name != "example.com" || full.Questions[1].Name != "example.net" {
 		t.Fatalf("unexpected question names: got=%q,%q", full.Questions[0].Name, full.Questions[1].Name)
 	}
-	if len(full.Additional) != 1 || full.Additional[0].Type != enums.DNSRecordTypeOPT {
+	if len(full.Additional) != 1 || full.Additional[0].Type != ENUMS.DNSRecordTypeOPT {
 		t.Fatalf("response must preserve the OPT record")
 	}
 }
@@ -177,8 +177,8 @@ func TestBuildFormatErrorResponseUsesFORMERR(t *testing.T) {
 	}
 
 	flags := binary.BigEndian.Uint16(response[2:4])
-	if got := flags & 0x000F; got != enums.DNSRCodeFormatError {
-		t.Fatalf("unexpected rcode: got=%d want=%d", got, enums.DNSRCodeFormatError)
+	if got := flags & 0x000F; got != ENUMS.DNSRCodeFormatError {
+		t.Fatalf("unexpected rcode: got=%d want=%d", got, ENUMS.DNSRCodeFormatError)
 	}
 	if got := binary.BigEndian.Uint16(response[0:2]); got != 0xABCD {
 		t.Fatalf("unexpected response id: got=%#x want=%#x", got, 0xABCD)
@@ -186,7 +186,7 @@ func TestBuildFormatErrorResponseUsesFORMERR(t *testing.T) {
 }
 
 func TestBuildRefusedResponseFromLiteUsesREFUSED(t *testing.T) {
-	request := buildDNSQuery(0x9999, "blocked.example", enums.DNSRecordTypeTXT, true)
+	request := buildDNSQuery(0x9999, "blocked.example", ENUMS.DNSRecordTypeTXT, true)
 
 	parsed, err := ParsePacketLite(request)
 	if err != nil {
@@ -199,8 +199,8 @@ func TestBuildRefusedResponseFromLiteUsesREFUSED(t *testing.T) {
 	}
 
 	flags := binary.BigEndian.Uint16(response[2:4])
-	if got := flags & 0x000F; got != enums.DNSRCodeRefused {
-		t.Fatalf("unexpected rcode: got=%d want=%d", got, enums.DNSRCodeRefused)
+	if got := flags & 0x000F; got != ENUMS.DNSRCodeRefused {
+		t.Fatalf("unexpected rcode: got=%d want=%d", got, ENUMS.DNSRCodeRefused)
 	}
 
 	full, err := ParsePacket(response)
@@ -210,13 +210,13 @@ func TestBuildRefusedResponseFromLiteUsesREFUSED(t *testing.T) {
 	if len(full.Questions) != 1 {
 		t.Fatalf("unexpected question count: got=%d want=1", len(full.Questions))
 	}
-	if len(full.Additional) != 1 || full.Additional[0].Type != enums.DNSRecordTypeOPT {
+	if len(full.Additional) != 1 || full.Additional[0].Type != ENUMS.DNSRecordTypeOPT {
 		t.Fatalf("response must preserve the OPT record")
 	}
 }
 
 func TestBuildEmptyNoErrorResponseHandlesManyLabels(t *testing.T) {
-	request := buildDNSQuery(0x2020, "a.b.c.d.e.f.g.h.i.j.k.example", enums.DNSRecordTypeA, true)
+	request := buildDNSQuery(0x2020, "a.b.c.d.e.f.g.h.i.j.k.example", ENUMS.DNSRecordTypeA, true)
 
 	response, err := BuildEmptyNoErrorResponse(request)
 	if err != nil {
@@ -233,7 +233,7 @@ func TestBuildEmptyNoErrorResponseHandlesManyLabels(t *testing.T) {
 	if parsed.Questions[0].Name != "a.b.c.d.e.f.g.h.i.j.k.example" {
 		t.Fatalf("unexpected qname: got=%q", parsed.Questions[0].Name)
 	}
-	if len(parsed.Additional) != 1 || parsed.Additional[0].Type != enums.DNSRecordTypeOPT {
+	if len(parsed.Additional) != 1 || parsed.Additional[0].Type != ENUMS.DNSRecordTypeOPT {
 		t.Fatalf("response must preserve the OPT record")
 	}
 }
@@ -262,7 +262,7 @@ func buildDNSQuery(id uint16, name string, qtype uint16, withOPT bool) []byte {
 	offset := dnsHeaderSize
 	offset += copy(packet[offset:], qname)
 	binary.BigEndian.PutUint16(packet[offset:offset+2], qtype)
-	binary.BigEndian.PutUint16(packet[offset+2:offset+4], enums.DNSQClassIN)
+	binary.BigEndian.PutUint16(packet[offset+2:offset+4], ENUMS.DNSQClassIN)
 	offset += 4
 	copy(packet[offset:], opt)
 

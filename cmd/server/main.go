@@ -18,7 +18,7 @@ import (
 	"masterdnsvpn-go/internal/config"
 	"masterdnsvpn-go/internal/logger"
 	"masterdnsvpn-go/internal/security"
-	"masterdnsvpn-go/internal/udpserver"
+	UDPServer "masterdnsvpn-go/internal/udpserver"
 )
 
 func main() {
@@ -41,7 +41,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := udpserver.New(cfg, log, codec)
+	srv := UDPServer.New(cfg, log, codec)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
