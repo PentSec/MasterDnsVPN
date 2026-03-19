@@ -1,0 +1,226 @@
+// ==============================================================================
+// MasterDnsVPN
+// Author: MasterkinG32
+// Github: https://github.com/masterking32
+// Year: 2026
+// ==============================================================================
+
+package logger
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"strings"
+	"time"
+)
+
+type Logger struct {
+	name           string
+	level          int
+	base           *log.Logger
+	color          bool
+	appNameText    string
+	appNameColored string
+}
+
+const (
+	levelDebug = iota
+	levelInfo
+	levelWarn
+	levelError
+)
+
+var colorTagCodes = map[string]string{
+	"black":   "\x1b[30m",
+	"red":     "\x1b[31m",
+	"green":   "\x1b[32m",
+	"yellow":  "\x1b[33m",
+	"blue":    "\x1b[34m",
+	"magenta": "\x1b[35m",
+	"cyan":    "\x1b[36m",
+	"white":   "\x1b[37m",
+	"gray":    "\x1b[90m",
+	"grey":    "\x1b[90m",
+	"bold":    "\x1b[1m",
+	"reset":   "\x1b[0m",
+}
+
+var plainLevelTexts = [...]string{
+	levelDebug: "[DEBUG]",
+	levelInfo:  "[INFO]",
+	levelWarn:  "[WARN]",
+	levelError: "[ERROR]",
+}
+
+var coloredLevelTexts = [...]string{
+	levelDebug: "\x1b[35m[DEBUG]\x1b[0m",
+	levelInfo:  "\x1b[32m[INFO]\x1b[0m",
+	levelWarn:  "\x1b[33m[WARN]\x1b[0m",
+	levelError: "\x1b[31m[ERROR]\x1b[0m",
+}
+
+func New(name, rawLevel string) *Logger {
+	appName := "[" + name + "]"
+	return &Logger{
+		name:           name,
+		level:          parseLevel(rawLevel),
+		base:           log.New(os.Stdout, "", log.LstdFlags),
+		color:          shouldUseColor(),
+		appNameText:    appName,
+		appNameColored: "\x1b[36m" + appName + "\x1b[0m",
+	}
+}
+
+func parseLevel(raw string) int {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "DEBUG":
+		return levelDebug
+	case "WARNING", "WARN":
+		return levelWarn
+	case "ERROR", "CRITICAL":
+		return levelError
+	default:
+		return levelInfo
+	}
+}
+
+func (l *Logger) logf(level int, format string, args ...any) {
+	if l == nil || level < l.level {
+		return
+	}
+
+	msg := format
+	if len(args) != 0 {
+		msg = fmt.Sprintf(format, args...)
+	}
+
+	appName := l.appNameText
+	levelText := plainLevelTexts[level]
+
+	if l.color {
+		if strings.IndexByte(msg, '<') >= 0 {
+			msg = renderColorTags(msg)
+		}
+		appName = l.appNameColored
+		levelText = coloredLevelTexts[level]
+	}
+
+	l.base.Print(appName, " ", levelText, " ", msg)
+}
+
+func (l *Logger) Debugf(format string, args ...any) { l.logf(levelDebug, format, args...) }
+func (l *Logger) Infof(format string, args ...any)  { l.logf(levelInfo, format, args...) }
+func (l *Logger) Warnf(format string, args ...any)  { l.logf(levelWarn, format, args...) }
+func (l *Logger) Errorf(format string, args ...any) { l.logf(levelError, format, args...) }
+
+func shouldUseColor() bool {
+	if strings.TrimSpace(os.Getenv("NO_COLOR")) != "" {
+		return false
+	}
+	if strings.TrimSpace(os.Getenv("FORCE_COLOR")) != "" {
+		return true
+	}
+	info, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+func renderColorTags(text string) string {
+	start := strings.IndexByte(text, '<')
+	if start == -1 {
+		return text
+	}
+
+	var b strings.Builder
+	b.Grow(len(text) + 16)
+	b.WriteString(text[:start])
+	stack := make([]string, 0, 4)
+
+	for i := start; i < len(text); {
+		if text[i] != '<' {
+			next := strings.IndexByte(text[i:], '<')
+			if next == -1 {
+				b.WriteString(text[i:])
+				break
+			}
+			b.WriteString(text[i : i+next])
+			i += next
+			continue
+		}
+
+		end := strings.IndexByte(text[i:], '>')
+		if end == -1 {
+			b.WriteString(text[i:])
+			break
+		}
+
+		rawTag := text[i : i+end+1]
+		tag := strings.ToLower(rawTag)
+		if name, closing, ok := parseColorTag(tag); ok {
+			if closing {
+				if name == "reset" {
+					stack = stack[:0]
+					b.WriteString("\x1b[0m")
+				} else if restoreColorTag(&stack, name) {
+					b.WriteString("\x1b[0m")
+					for _, active := range stack {
+						b.WriteString(colorTagCodes[active])
+					}
+				} else {
+					b.WriteString(rawTag)
+				}
+			} else {
+				stack = append(stack, name)
+				b.WriteString(colorTagCodes[name])
+			}
+		} else {
+			b.WriteString(rawTag)
+		}
+		i += end + 1
+	}
+
+	if len(stack) != 0 {
+		b.WriteString("\x1b[0m")
+	}
+
+	return b.String()
+}
+
+func parseColorTag(tag string) (name string, closing bool, ok bool) {
+	if len(tag) < 3 || tag[0] != '<' || tag[len(tag)-1] != '>' {
+		return "", false, false
+	}
+	closing = strings.HasPrefix(tag, "</")
+	if closing {
+		name = tag[2 : len(tag)-1]
+	} else {
+		name = tag[1 : len(tag)-1]
+	}
+	_, ok = colorTagCodes[name]
+	return name, closing, ok
+}
+
+func restoreColorTag(stack *[]string, name string) bool {
+	if stack == nil || len(*stack) == 0 {
+		return false
+	}
+	items := *stack
+	for idx := len(items) - 1; idx >= 0; idx-- {
+		if items[idx] != name {
+			continue
+		}
+		copy(items[idx:], items[idx+1:])
+		lastIdx := len(items) - 1
+		items[lastIdx] = ""
+		*stack = items[:lastIdx]
+		return true
+	}
+	return false
+}
+
+func NowUnixNano() int64 {
+	return time.Now().UnixNano()
+}

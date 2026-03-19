@@ -1,0 +1,263 @@
+# ==============================================================================
+# MasterDnsVPN Client Configuration (Sample)
+# Author: MasterkinG32 (Github: https://github.com/masterking32)
+# Year: 2026
+# ------------------------------------------------------------------------------
+# This sample is synchronized with current client code paths.
+# If a key exists here, it is either read directly by code or used for compatibility.
+# ============================================================================== 
+
+# ------------------------------------------------------------------------------
+# 1) Core Tunnel & Protocol
+# ------------------------------------------------------------------------------
+
+# Transport protocol between client and server:
+# - "SOCKS5": optimized proxy mode (recommended for normal browsing/apps)
+# - "TCP": raw TCP tunnel mode (for forwarding other protocols)
+PROTOCOL_TYPE = "SOCKS5"
+
+# Must match server DOMAIN values.
+DOMAINS = ["v.domain.com"]
+
+# Encryption method:
+# 0=None, 1=XOR, 2=ChaCha20, 3=AES-128-GCM, 4=AES-192-GCM, 5=AES-256-GCM
+# Must match server DATA_ENCRYPTION_METHOD.
+DATA_ENCRYPTION_METHOD = 1
+
+# Shared secret key with server (required on client).
+ENCRYPTION_KEY = ""
+
+# ------------------------------------------------------------------------------
+# 2) Local Listener & Local SOCKS Authentication
+# ------------------------------------------------------------------------------
+
+# Local bind endpoint for apps.
+LISTEN_IP = "0.0.0.0"
+LISTEN_PORT = 1080
+
+# Local SOCKS auth (applies when PROTOCOL_TYPE="SOCKS5").
+# This is for clients connecting to THIS local proxy, not server auth.
+SOCKS5_AUTH = true
+SOCKS5_USER = "master_dns_vpn"
+SOCKS5_PASS = "master_dns_vpn"
+
+# Maximum time (seconds) allowed for SOCKS handshake completion per stream.
+# For high-loss / slow-resolver networks, use a slightly larger timeout to
+# avoid aborting streams that are still progressing slowly.
+SOCKS_HANDSHAKE_TIMEOUT = 300.0
+
+# ------------------------------------------------------------------------------
+# 3) Resolver Selection & DNS Strategy
+# ------------------------------------------------------------------------------
+
+# Resolver pool moved to client_resolvers.txt.
+# Supported formats per line:
+# - IP
+# - IP:PORT
+# - CIDR
+# - CIDR:PORT
+# Examples:
+# - 1.1.1.1
+# - 1.1.1.1:5353
+# - 1.1.1.0/24
+# - 1.1.1.0/24:99
+# This file must exist next to client executable/config file.
+
+# Send each DNS query N times for reliability in lossy networks.
+# 1 = no duplication. 2 is the recommended starting point for unstable links.
+# Higher values increase bandwidth/CPU pressure quickly.
+PACKET_DUPLICATION_COUNT = 2
+
+# Setup/control packets for new streams are more sensitive to loss than normal data.
+# This value controls duplication for STREAM_SYN and SOCKS5_SYN only.
+# It should be >= PACKET_DUPLICATION_COUNT.
+SETUP_PACKET_DUPLICATION_COUNT = 3
+
+# Stream-level soft affinity: after this many STREAM_RESEND packets in a row,
+# switch the stream's preferred resolver if another active resolver is available.
+STREAM_RESOLVER_FAILOVER_RESEND_THRESHOLD = 2
+# Minimum seconds between preferred-resolver switches for the same stream.
+STREAM_RESOLVER_FAILOVER_COOLDOWN = 1.0
+
+# Max packet/control blocks packed per DNS operation (user upper bound).
+# Runtime value = min(MAX_PACKETS_PER_BATCH, MTU-based upload limit).
+# Upload MTU limit uses 50% of negotiated upload MTU: floor((MTU*0.50)/5).
+# 1 = disable batching.
+MAX_PACKETS_PER_BATCH = 5
+
+# Resolver balancing strategy:
+# 1=random, 2=round-robin, 3=least-loss, 4=lowest-latency
+RESOLVER_BALANCING_STRATEGY = 2
+
+# If true, asks server to base-encode DNS payloads (more compatible, less efficient).
+BASE_ENCODE_DATA = false
+
+# Timeout (seconds) for normal DNS query/response operations.
+DNS_QUERY_TIMEOUT = 5.0
+
+# Timeout (seconds) for DNS-over-tunnel request/response operations.
+# Used by the local DNS server and DNS-only SOCKS UDP relay paths.
+DNS_TUNNEL_QUERY_TIMEOUT = 30.0
+# Total attempts for one DNS-over-tunnel resolve before returning SERVFAIL.
+# Re-sending the same request helps recover when DNS response fragments are lost.
+DNS_TUNNEL_QUERY_RETRIES = 2
+
+# Optional local DNS server exposed by the client.
+# When enabled, point your system/browser DNS to LOCAL_DNS_IP:LOCAL_DNS_PORT.
+LOCAL_DNS_ENABLED = false
+LOCAL_DNS_IP = "0.0.0.0"
+LOCAL_DNS_PORT = 53
+LOCAL_DNS_WORKERS = 2
+
+# Client-side DNS response cache used by both local DNS mode and DNS-only SOCKS UDP mode.
+# Each cache entry stays valid for DNS_CACHE_TTL_SECONDS after its last successful use.
+DNS_CACHE_ENABLED = true
+DNS_CACHE_MAX_RECORDS = 8000
+DNS_CACHE_TTL_SECONDS = 14400
+DNS_CACHE_FILE = "dns_cache.json"
+DNS_CACHE_FLUSH_INTERVAL_SECONDS = 30.0
+
+# Compression for client -> server payloads (upload direction).
+# 0=OFF, 1=ZSTD, 2=LZ4, 3=ZLIB
+# Payloads <=100 bytes are never compressed to reduce CPU usage.
+# Note: If your CPU usage is high, try setting this to 0 (OFF) or 1 (ZSTD). If you have very powerful CPU and want max compression, try 3 (ZLIB).
+UPLOAD_COMPRESSION_TYPE = 0
+
+# Compression for server -> client payloads (download direction).
+# Use same enum values as UPLOAD_COMPRESSION_TYPE.
+# Note: If your CPU usage is high, try setting this to 0 (OFF) or 1 (ZSTD). If you have very powerful CPU and want max compression, try 3 (ZLIB).
+DOWNLOAD_COMPRESSION_TYPE = 0
+
+# ------------------------------------------------------------------------------
+# 4) MTU Discovery & Successful Result Export
+# ------------------------------------------------------------------------------
+
+# Minimum accepted MTU values during resolver validation (0 disables each bound).
+# Please set these according to your network conditions.
+# Note: The software will suggest the best MTUs for you based on your domain.
+MIN_UPLOAD_MTU = 70
+MIN_DOWNLOAD_MTU = 150
+
+# Initial upper bounds for MTU probing.
+# Note: The software will suggest the best MTUs for you based on your domain.
+MAX_UPLOAD_MTU = 150
+MAX_DOWNLOAD_MTU = 200
+
+# MTU test aggressiveness.
+MTU_TEST_RETRIES = 2
+MTU_TEST_TIMEOUT = 2.0
+
+# Auto profile scaling by resolver-domain count (small/medium/large).
+# If true, runtime tuning for MTU/recheck is adjusted automatically.
+AUTO_SCALE_PROFILES = true
+
+# Number of resolver-domain pairs tested in parallel during initial MTU scan.
+# Note: when AUTO_SCALE_PROFILES=true, runtime value is auto-tuned by list size.
+# Higher values speed up startup but increase temporary CPU/network usage.
+MTU_TEST_PARALLELISM = 6
+
+# If true, successful MTU-tested resolvers are saved to file.
+SAVE_MTU_SERVERS_TO_FILE = false
+
+# Output file name.
+# If {time} is present, timestamp is inserted into filename.
+# Example output: masterdnsvpn_success_test_20260312_121530.txt
+MTU_SERVERS_FILE_NAME = "masterdnsvpn_success_test_{time}.txt"
+
+# Per-line format for each successful resolver.
+# Supported placeholders:
+# {IP}, {UP_MTU}, {DOWN_MTU}, {DOWN-MTU}, {DOMAIN}, {UP_MTU_CHARS}, {TIME}
+# Example minimal format: "{IP}"
+MTU_SERVERS_FILE_FORMAT = "{IP} - UP: {UP_MTU} DOWN: {DOWN-MTU}"
+
+# Optional text appended once after initial MTU scan is finished.
+# Empty string = disabled.
+MTU_USING_SECTION_SEPARATOR_TEXT = "---- Active MTU Testing Results ----"
+
+# Optional runtime log line (written to MTU output file) when a server is auto-disabled.
+# Empty string = disabled.
+# Supported placeholders:
+# {IP}, {DOMAIN}, {CAUSE}, {TIME}, {UP_MTU}, {DOWN_MTU}
+MTU_REMOVED_SERVER_LOG_FORMAT = "IP {IP} removed from list at {TIME} due to {CAUSE}"
+
+# Optional runtime log line (written to MTU output file) when a server is re-added.
+# Empty string = disabled.
+# Supported placeholders:
+# {IP}, {DOMAIN}, {TIME}, {UP_MTU}, {DOWN_MTU}
+MTU_ADDED_SERVER_LOG_FORMAT = "Server {IP} re-added at {TIME} (UP MTU: {UP_MTU}, DOWN MTU: {DOWN_MTU})"
+
+# Auto-disable a resolver/domain pair during runtime if it has 100% timeouts
+# across the configured observation window (while at least one other active server exists).
+AUTO_DISABLE_TIMEOUT_SERVERS = true
+AUTO_DISABLE_TIMEOUT_WINDOW_SECONDS = 120
+
+# Minimum resolved observations (timeout/success events) required before disable decision.
+# Higher value reduces false positives on low-traffic clients.
+AUTO_DISABLE_TIMEOUT_MIN_OBSERVATIONS = 3
+
+# Health worker polling interval.
+AUTO_DISABLE_CHECK_INTERVAL_SECONDS = 1.0
+
+# Recheck invalid servers (initial MTU fail + runtime-disabled) periodically.
+RECHECK_INACTIVE_SERVERS_ENABLED = true
+
+# A full recheck cycle starts this many seconds after initial scan completion,
+# then repeats with the same interval.
+RECHECK_INACTIVE_INTERVAL_SECONDS = 300
+
+# Delay between testing two inactive servers in background mode.
+# Minimum is always enforced as 3 seconds.
+RECHECK_SERVER_INTERVAL_SECONDS = 3.0
+
+# Number of inactive resolver-domain pairs checked per background recheck cycle.
+# Note: when AUTO_SCALE_PROFILES=true, runtime value is auto-tuned by list size.
+RECHECK_BATCH_SIZE = 5
+
+# ------------------------------------------------------------------------------
+# 5) ARQ / Reliability
+# ------------------------------------------------------------------------------
+
+# Session initialization retry count.
+MAX_CONNECTION_ATTEMPTS = 10
+
+# Data-plane ARQ settings.
+# Rediuce ARQ_WINDOW_SIZE if your RAM is limited or if you have very high MTUs and want to reduce memory usage.
+ARQ_WINDOW_SIZE = 1000
+ARQ_INITIAL_RTO = 0.5
+ARQ_MAX_RTO = 3.0
+
+# Control-plane ARQ settings (SYN/FIN/RST/SOCKS control packets).
+ARQ_CONTROL_INITIAL_RTO = 0.5
+ARQ_CONTROL_MAX_RTO = 3.0
+ARQ_CONTROL_MAX_RETRIES = 80
+
+# ------------------------------------------------------------------------------
+# 6) Runtime Performance & Memory Caps
+# ------------------------------------------------------------------------------
+
+# Worker counts for receive and DNS TX loops.
+NUM_RX_WORKERS = 2
+NUM_DNS_WORKERS = 2
+
+# CPU thread-pool size for parser/codec offload.
+# 0 = auto (recommended). Set a positive number to force size. Set -1 to disable.
+# For a 2-core system, 2 is a safer default than an aggressive auto profile.
+CPU_WORKER_THREADS = 0
+
+# Max in-flight RX packet processing tasks.
+RX_SEMAPHORE_LIMIT = 500
+
+# Max closed-stream records retained for duplicate-close protection.
+MAX_CLOSED_STREAM_RECORDS = 2000
+
+# UDP socket buffer bytes.
+SOCKET_BUFFER_SIZE = 8388608
+
+# Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_LEVEL = "INFO"
+
+# ------------------------------------------------------------------------------
+# 7) Version Marker
+# ------------------------------------------------------------------------------
+CONFIG_VERSION = 5.0
+
