@@ -34,13 +34,14 @@ type Decision struct {
 }
 
 type Matcher struct {
-	allowedDomains []allowedDomain
+	allowedDomains []string
+	root           *domainNode
 	minLabelLength int
 }
 
-type allowedDomain struct {
-	domain string
-	suffix string
+type domainNode struct {
+	children map[string]*domainNode
+	domain   string
 }
 
 func New(domains []string, minLabelLength int) *Matcher {
@@ -50,7 +51,8 @@ func New(domains []string, minLabelLength int) *Matcher {
 	}
 
 	return &Matcher{
-		allowedDomains: newAllowedDomains(normalized),
+		allowedDomains: normalized,
+		root:           buildDomainTrie(normalized),
 		minLabelLength: minLabelLength,
 	}
 }
@@ -61,24 +63,22 @@ func (m *Matcher) Domains() []string {
 	}
 
 	domains := make([]string, len(m.allowedDomains))
-	for i := range m.allowedDomains {
-		domains[i] = m.allowedDomains[i].domain
-	}
+	copy(domains, m.allowedDomains)
 	return domains
 }
 
 func (m *Matcher) Match(parsed DnsParser.LitePacket) Decision {
-	if len(parsed.Questions) == 0 {
+	if !parsed.HasQuestion {
 		return Decision{Action: ActionFormatError, Reason: "missing-question"}
 	}
 
-	q0 := parsed.Questions[0]
+	q0 := parsed.FirstQuestion
 	requestName := normalizeParsedDomain(q0.Name)
 	if requestName == "" || requestName == "." {
 		return Decision{Action: ActionFormatError, Reason: "empty-qname"}
 	}
 
-	baseDomain, labels, matched := findAllowedDomain(requestName, m.allowedDomains)
+	baseDomain, labels, matched := findAllowedDomain(requestName, m.root)
 	if !matched {
 		return Decision{
 			Action:       ActionNoData,
@@ -168,20 +168,36 @@ func normalizeDomains(domains []string) []string {
 	return normalized
 }
 
-func newAllowedDomains(domains []string) []allowedDomain {
+func buildDomainTrie(domains []string) *domainNode {
 	if len(domains) == 0 {
 		return nil
 	}
 
-	allowed := make([]allowedDomain, len(domains))
-	for i, domain := range domains {
-		allowed[i] = allowedDomain{
-			domain: domain,
-			suffix: "." + domain,
+	root := &domainNode{}
+	for _, domain := range domains {
+		node := root
+		offset := len(domain)
+		for offset > 0 {
+			start := strings.LastIndexByte(domain[:offset], '.')
+			labelStart := start + 1
+			label := domain[labelStart:offset]
+			if node.children == nil {
+				node.children = make(map[string]*domainNode, 2)
+			}
+			child := node.children[label]
+			if child == nil {
+				child = &domainNode{}
+				node.children[label] = child
+			}
+			node = child
+			if start < 0 {
+				break
+			}
+			offset = start
 		}
+		node.domain = domain
 	}
-
-	return allowed
+	return root
 }
 
 func normalizeDomain(domain string) string {
@@ -189,25 +205,51 @@ func normalizeDomain(domain string) string {
 }
 
 func normalizeParsedDomain(domain string) string {
-	return strings.TrimSuffix(domain, ".")
+	if len(domain) != 0 && domain[len(domain)-1] == '.' {
+		return domain[:len(domain)-1]
+	}
+	return domain
 }
 
-func findAllowedDomain(requestName string, allowedDomains []allowedDomain) (baseDomain string, labels string, matched bool) {
-	for _, domain := range allowedDomains {
-		if requestName == domain.domain {
-			return domain.domain, "", true
-		}
-
-		if len(requestName) <= len(domain.suffix) {
-			continue
-		}
-
-		if strings.HasSuffix(requestName, domain.suffix) {
-			return domain.domain, requestName[:len(requestName)-len(domain.suffix)], true
-		}
+func findAllowedDomain(requestName string, root *domainNode) (baseDomain string, labels string, matched bool) {
+	if root == nil || requestName == "" {
+		return "", "", false
 	}
 
-	return "", "", false
+	node := root
+	offset := len(requestName)
+	matchedPos := -1
+
+	for offset > 0 {
+		start := strings.LastIndexByte(requestName[:offset], '.')
+		labelStart := start + 1
+		child := node.children[requestName[labelStart:offset]]
+		if child == nil {
+			break
+		}
+		node = child
+		if node.domain != "" {
+			baseDomain = node.domain
+			matchedPos = labelStart
+		}
+		if start < 0 {
+			break
+		}
+		offset = start
+	}
+
+	if matchedPos < 0 {
+		return "", "", false
+	}
+	if matchedPos == 0 {
+		return baseDomain, "", true
+	}
+
+	labels = requestName[:matchedPos-1]
+	if strings.IndexByte(labels, '.') >= 0 {
+		labels = stripLabelDots(labels)
+	}
+	return baseDomain, labels, true
 }
 
 func stripLabelDots(labels string) string {
