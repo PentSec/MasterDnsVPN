@@ -19,6 +19,9 @@ const streamOutboundInitialRetryDelay = 350 * time.Millisecond
 const streamOutboundMaxRetryDelay = 2 * time.Second
 const streamOutboundMinRetryDelay = 120 * time.Millisecond
 
+var outboundPacketPriorityTable = buildOutboundPacketPriorityTable()
+var streamOutboundAckRequiredTable = buildStreamOutboundAckRequiredTable()
+
 type streamOutboundStore struct {
 	mu         sync.Mutex
 	sessions   map[uint8]*streamOutboundSession
@@ -110,10 +113,10 @@ func (s *streamOutboundStore) Next(sessionID uint8, now time.Time) (VpnProto.Pac
 		if !ok {
 			return VpnProto.Packet{}, false
 		}
-		if !requiresStreamOutboundAck(packet.PacketType) {
+		retryBase := normalizeStreamOutboundRetryBase(session.retryBase)
+		if !streamOutboundAckRequiredTable[packet.PacketType] {
 			return packet, true
 		}
-		retryBase := streamOutboundRetryBase(session)
 		session.pending = append(session.pending, outboundPendingPacket{
 			Packet:     packet,
 			CreatedAt:  now,
@@ -133,19 +136,20 @@ func (s *streamOutboundStore) Next(sessionID uint8, now time.Time) (VpnProto.Pac
 	if selectedIdx < 0 {
 		return VpnProto.Packet{}, false
 	}
-	packet := session.pending[selectedIdx].Packet
-	delay := session.pending[selectedIdx].RetryDelay
+	pending := &session.pending[selectedIdx]
+	packet := pending.Packet
+	delay := pending.RetryDelay
 	if delay <= 0 {
-		delay = streamOutboundRetryBase(session)
+		delay = normalizeStreamOutboundRetryBase(session.retryBase)
 	}
-	session.pending[selectedIdx].LastSentAt = now
-	session.pending[selectedIdx].RetryAt = now.Add(delay)
-	session.pending[selectedIdx].RetryCount++
+	pending.LastSentAt = now
+	pending.RetryAt = now.Add(delay)
+	pending.RetryCount++
 	delay *= 2
 	if delay > streamOutboundMaxRetryDelay {
 		delay = streamOutboundMaxRetryDelay
 	}
-	session.pending[selectedIdx].RetryDelay = delay
+	pending.RetryDelay = delay
 	return packet, true
 }
 
@@ -289,15 +293,6 @@ func matchesStreamOutboundAck(pendingType uint8, ackType uint8) bool {
 	}
 }
 
-func requiresStreamOutboundAck(packetType uint8) bool {
-	switch packetType {
-	case Enums.PACKET_STREAM_DATA, Enums.PACKET_STREAM_FIN, Enums.PACKET_STREAM_RST:
-		return true
-	default:
-		return false
-	}
-}
-
 func pruneOutboundStreamPackets(session *streamOutboundSession, streamID uint16) {
 	if session == nil {
 		return
@@ -370,8 +365,17 @@ func popNextOutboundPacket(session *streamOutboundSession) (VpnProto.Packet, boo
 	if session == nil || len(session.queue) == 0 {
 		return VpnProto.Packet{}, false
 	}
+	if len(session.queue) == 1 {
+		packet := session.queue[0]
+		session.queue[0] = VpnProto.Packet{}
+		session.queue = session.queue[:0]
+		if packet.StreamID != 0 {
+			session.rrCursor = packet.StreamID
+		}
+		return packet, true
+	}
 
-	bestPriority := 255
+	bestPriority := uint8(255)
 	selectedIdx := -1
 	lowestStreamID := uint16(0)
 	nextStreamID := uint16(0)
@@ -380,7 +384,7 @@ func popNextOutboundPacket(session *streamOutboundSession) (VpnProto.Packet, boo
 	hasLowest := false
 	hasNext := false
 	for idx, packet := range session.queue {
-		priority := outboundPacketPriority(packet.PacketType)
+		priority := outboundPacketPriorityTable[packet.PacketType]
 		if priority > bestPriority {
 			continue
 		}
@@ -427,34 +431,48 @@ func popNextOutboundPacket(session *streamOutboundSession) (VpnProto.Packet, boo
 	return packet, true
 }
 
-func outboundPacketPriority(packetType uint8) int {
-	switch packetType {
-	case Enums.PACKET_STREAM_RST:
-		return 0
-	case Enums.PACKET_STREAM_FIN:
-		return 1
-	case Enums.PACKET_STREAM_SYN_ACK, Enums.PACKET_SOCKS5_SYN_ACK:
-		return 2
-	case Enums.PACKET_STREAM_DATA_ACK, Enums.PACKET_STREAM_FIN_ACK, Enums.PACKET_STREAM_RST_ACK:
-		return 3
-	case Enums.PACKET_STREAM_DATA:
-		return 4
-	default:
-		return 5
-	}
-}
-
 func streamOutboundRetryBase(session *streamOutboundSession) time.Duration {
-	if session == nil || session.retryBase <= 0 {
+	if session == nil {
 		return streamOutboundInitialRetryDelay
 	}
-	if session.retryBase < streamOutboundMinRetryDelay {
+	return normalizeStreamOutboundRetryBase(session.retryBase)
+}
+
+func normalizeStreamOutboundRetryBase(retryBase time.Duration) time.Duration {
+	if retryBase <= 0 {
+		return streamOutboundInitialRetryDelay
+	}
+	if retryBase < streamOutboundMinRetryDelay {
 		return streamOutboundMinRetryDelay
 	}
-	if session.retryBase > streamOutboundMaxRetryDelay {
+	if retryBase > streamOutboundMaxRetryDelay {
 		return streamOutboundMaxRetryDelay
 	}
-	return session.retryBase
+	return retryBase
+}
+
+func buildOutboundPacketPriorityTable() [256]uint8 {
+	var table [256]uint8
+	for idx := range table {
+		table[idx] = 5
+	}
+	table[Enums.PACKET_STREAM_RST] = 0
+	table[Enums.PACKET_STREAM_FIN] = 1
+	table[Enums.PACKET_STREAM_SYN_ACK] = 2
+	table[Enums.PACKET_SOCKS5_SYN_ACK] = 2
+	table[Enums.PACKET_STREAM_DATA_ACK] = 3
+	table[Enums.PACKET_STREAM_FIN_ACK] = 3
+	table[Enums.PACKET_STREAM_RST_ACK] = 3
+	table[Enums.PACKET_STREAM_DATA] = 4
+	return table
+}
+
+func buildStreamOutboundAckRequiredTable() [256]bool {
+	var table [256]bool
+	table[Enums.PACKET_STREAM_DATA] = true
+	table[Enums.PACKET_STREAM_FIN] = true
+	table[Enums.PACKET_STREAM_RST] = true
+	return table
 }
 
 func updateStreamOutboundRTO(session *streamOutboundSession, pending outboundPendingPacket, ackedAt time.Time) {
