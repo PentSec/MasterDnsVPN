@@ -34,8 +34,9 @@ type outboundPendingPacket struct {
 }
 
 type streamOutboundSession struct {
-	queue   []VpnProto.Packet
-	pending []outboundPendingPacket
+	queue    []VpnProto.Packet
+	pending  []outboundPendingPacket
+	rrCursor uint16
 }
 
 func newStreamOutboundStore(windowSize int, queueLimit int) *streamOutboundStore {
@@ -68,8 +69,9 @@ func (s *streamOutboundStore) Enqueue(sessionID uint8, packet VpnProto.Packet) b
 	session := s.sessions[sessionID]
 	if session == nil {
 		session = &streamOutboundSession{
-			queue:   make([]VpnProto.Packet, 0, 8),
-			pending: make([]outboundPendingPacket, 0, s.effectiveWindow()),
+			queue:    make([]VpnProto.Packet, 0, 8),
+			pending:  make([]outboundPendingPacket, 0, s.effectiveWindow()),
+			rrCursor: 0,
 		}
 		s.sessions[sessionID] = session
 	}
@@ -98,9 +100,10 @@ func (s *streamOutboundStore) Next(sessionID uint8, now time.Time) (VpnProto.Pac
 		return VpnProto.Packet{}, false
 	}
 	if len(session.pending) < s.effectiveWindow() && len(session.queue) != 0 {
-		packet := session.queue[0]
-		session.queue[0] = VpnProto.Packet{}
-		session.queue = session.queue[1:]
+		packet, ok := popNextOutboundPacket(session)
+		if !ok {
+			return VpnProto.Packet{}, false
+		}
 		session.pending = append(session.pending, outboundPendingPacket{
 			Packet:     packet,
 			CreatedAt:  now,
@@ -306,6 +309,92 @@ func prependOutboundPacket(queue *[]VpnProto.Packet, packet VpnProto.Packet) {
 	*queue = append(*queue, VpnProto.Packet{})
 	copy((*queue)[1:], (*queue)[:len(*queue)-1])
 	(*queue)[0] = packet
+}
+
+func popNextOutboundPacket(session *streamOutboundSession) (VpnProto.Packet, bool) {
+	if session == nil || len(session.queue) == 0 {
+		return VpnProto.Packet{}, false
+	}
+
+	bestPriority := 255
+	for _, packet := range session.queue {
+		priority := outboundPacketPriority(packet.PacketType)
+		if priority < bestPriority {
+			bestPriority = priority
+		}
+	}
+
+	targetStreamID, useRoundRobin := nextOutboundPriorityStream(session.queue, bestPriority, session.rrCursor)
+	selectedIdx := -1
+	for idx, packet := range session.queue {
+		if outboundPacketPriority(packet.PacketType) != bestPriority {
+			continue
+		}
+		if useRoundRobin && packet.StreamID != targetStreamID {
+			continue
+		}
+		selectedIdx = idx
+		break
+	}
+	if selectedIdx < 0 {
+		return VpnProto.Packet{}, false
+	}
+
+	packet := session.queue[selectedIdx]
+	copy(session.queue[selectedIdx:], session.queue[selectedIdx+1:])
+	lastIdx := len(session.queue) - 1
+	session.queue[lastIdx] = VpnProto.Packet{}
+	session.queue = session.queue[:lastIdx]
+	if useRoundRobin {
+		session.rrCursor = targetStreamID
+	}
+	return packet, true
+}
+
+func nextOutboundPriorityStream(queue []VpnProto.Packet, priority int, cursor uint16) (uint16, bool) {
+	var lowest uint16
+	var next uint16
+	hasLowest := false
+	hasNext := false
+
+	for _, packet := range queue {
+		if outboundPacketPriority(packet.PacketType) != priority || packet.StreamID == 0 {
+			continue
+		}
+		if !hasLowest || packet.StreamID < lowest {
+			lowest = packet.StreamID
+			hasLowest = true
+		}
+		if packet.StreamID > cursor && (!hasNext || packet.StreamID < next) {
+			next = packet.StreamID
+			hasNext = true
+		}
+	}
+
+	if hasNext {
+		return next, true
+	}
+	if hasLowest {
+		return lowest, true
+	}
+	return 0, false
+}
+
+func outboundPacketPriority(packetType uint8) int {
+	switch packetType {
+	case Enums.PACKET_STREAM_RST:
+		return 0
+	case Enums.PACKET_STREAM_FIN:
+		return 1
+	case Enums.PACKET_STREAM_SYN_ACK, Enums.PACKET_SOCKS5_SYN_ACK:
+		return 2
+	case Enums.PACKET_STREAM_DATA_ACK, Enums.PACKET_STREAM_FIN_ACK, Enums.PACKET_STREAM_RST_ACK:
+		return 3
+	case Enums.PACKET_STREAM_DATA:
+		return 4
+	default:
+		return 5
+	}
 }
 
 func (s *streamOutboundStore) effectiveWindow() int {
