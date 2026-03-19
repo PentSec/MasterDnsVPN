@@ -106,7 +106,11 @@ func (c *Client) startStream0Runtime(ctx context.Context) error {
 	if c == nil || c.stream0Runtime == nil {
 		return nil
 	}
-	return c.stream0Runtime.Start(ctx)
+	if err := c.stream0Runtime.Start(ctx); err != nil {
+		return err
+	}
+	c.startResolverHealthRuntime(ctx)
+	return nil
 }
 
 func (c *Client) localDNSWorker(ctx context.Context, conn *net.UDPConn, queue <-chan localDNSRequest, packetPool *sync.Pool) {

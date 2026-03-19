@@ -83,6 +83,7 @@ func (c *Client) RunInitialMTUTests() error {
 	c.syncedUploadMTU = minConnectionMTU(c.connections, true)
 	c.syncedDownloadMTU = minConnectionMTU(c.connections, false)
 	c.syncedUploadChars = minConnectionUploadChars(c.connections, c)
+	c.initResolverRecheckMeta()
 	c.updateMaxPackedBlocks()
 	return nil
 }

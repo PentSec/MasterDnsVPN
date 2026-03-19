@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"os"
 	"strconv"
 	"time"
 
@@ -202,8 +203,19 @@ func (c *Client) fragmentMainStreamPayload(domain string, packetType uint8, payl
 }
 
 func (c *Client) exchangeDNSOverConnection(connection Connection, packet []byte, timeout time.Duration) ([]byte, error) {
+	startedAt := time.Now()
+	c.noteResolverSend(connection.Key)
+
 	if c != nil && c.exchangeQueryFn != nil {
-		return c.exchangeQueryFn(connection, packet, timeout)
+		response, err := c.exchangeQueryFn(connection, packet, timeout)
+		if err != nil {
+			if isResolverTimeout(err) {
+				c.noteResolverTimeout(connection.Key)
+			}
+			return nil, err
+		}
+		c.noteResolverSuccess(connection.Key, time.Since(startedAt))
+		return response, nil
 	}
 
 	transport, err := newUDPQueryTransport(connection.ResolverLabel)
@@ -211,7 +223,26 @@ func (c *Client) exchangeDNSOverConnection(connection Connection, packet []byte,
 		return nil, err
 	}
 	defer transport.conn.Close()
-	return exchangeUDPQuery(transport, packet, timeout)
+	response, err := exchangeUDPQuery(transport, packet, timeout)
+	if err != nil {
+		if isResolverTimeout(err) {
+			c.noteResolverTimeout(connection.Key)
+		}
+		return nil, err
+	}
+	c.noteResolverSuccess(connection.Key, time.Since(startedAt))
+	return response, nil
+}
+
+func isResolverTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if os.IsTimeout(err) {
+		return true
+	}
+	timeoutErr, ok := err.(net.Error)
+	return ok && timeoutErr.Timeout()
 }
 
 func (c *Client) nextMainSequence() uint16 {

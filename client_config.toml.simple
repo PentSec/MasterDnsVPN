@@ -38,6 +38,14 @@ LOCAL_DNS_CACHE_FLUSH_INTERVAL_SECONDS = 60.0
 # Resolver balancing strategy:
 # 0=Round Robin (default), 1=Random, 2=Round Robin, 3=Least Loss, 4=Lowest Latency
 RESOLVER_BALANCING_STRATEGY = 0
+AUTO_DISABLE_TIMEOUT_SERVERS = true
+AUTO_DISABLE_TIMEOUT_WINDOW_SECONDS = 300.0
+AUTO_DISABLE_TIMEOUT_MIN_OBSERVATIONS = 3
+AUTO_DISABLE_CHECK_INTERVAL_SECONDS = 1.0
+RECHECK_INACTIVE_SERVERS_ENABLED = true
+RECHECK_INACTIVE_INTERVAL_SECONDS = 1800.0
+RECHECK_SERVER_INTERVAL_SECONDS = 3.0
+RECHECK_BATCH_SIZE = 5
 
 # Hard cap for how many small control packets may be packed into one block.
 # The effective runtime value is also limited by 50% of synced upload MTU.

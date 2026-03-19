@@ -8,6 +8,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -50,15 +51,21 @@ type Client struct {
 	syncedUploadChars   int
 	maxPackedBlocks     int
 
-	exchangeQueryFn    func(Connection, []byte, time.Duration) ([]byte, error)
-	fragmentLimits     sync.Map
-	stream0Runtime     *stream0Runtime
-	streamsMu          sync.Mutex
-	streams            map[uint16]*clientStream
-	streamTXWindow     int
-	streamTXQueueLimit int
-	streamTXMaxRetries int
-	streamTXTTL        time.Duration
+	exchangeQueryFn     func(Connection, []byte, time.Duration) ([]byte, error)
+	fragmentLimits      sync.Map
+	stream0Runtime      *stream0Runtime
+	streamsMu           sync.Mutex
+	streams             map[uint16]*clientStream
+	streamTXWindow      int
+	streamTXQueueLimit  int
+	streamTXMaxRetries  int
+	streamTXTTL         time.Duration
+	resolverHealthMu    sync.Mutex
+	resolverHealth      map[string]*resolverHealthState
+	resolverRecheck     map[string]resolverRecheckState
+	runtimeDisabled     map[string]resolverDisabledState
+	healthRuntimeRun    bool
+	recheckConnectionFn func(*Connection) bool
 }
 
 type Connection struct {
@@ -142,6 +149,9 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 		streamTXQueueLimit: cfg.StreamTXQueueLimit,
 		streamTXMaxRetries: cfg.StreamTXMaxRetries,
 		streamTXTTL:        time.Duration(cfg.StreamTXTTLSeconds * float64(time.Second)),
+		resolverHealth:     make(map[string]*resolverHealthState, len(cfg.Domains)*len(cfg.Resolvers)),
+		resolverRecheck:    make(map[string]resolverRecheckState, len(cfg.Domains)*len(cfg.Resolvers)),
+		runtimeDisabled:    make(map[string]resolverDisabledState, len(cfg.Domains)*len(cfg.Resolvers)),
 	}
 	c.ResetRuntimeState(true)
 	c.uploadCompression = uint8(cfg.UploadCompressionType)
@@ -221,6 +231,12 @@ func (c *Client) ResetRuntimeState(resetSessionCookie bool) {
 	c.streamsMu.Lock()
 	c.streams = make(map[uint16]*clientStream, 16)
 	c.streamsMu.Unlock()
+	c.resolverHealthMu.Lock()
+	c.resolverHealth = make(map[string]*resolverHealthState, len(c.connections))
+	c.resolverRecheck = make(map[string]resolverRecheckState, len(c.connections))
+	c.runtimeDisabled = make(map[string]resolverDisabledState, len(c.connections))
+	c.healthRuntimeRun = false
+	c.resolverHealthMu.Unlock()
 }
 
 func (c *Client) updateMaxPackedBlocks() {
@@ -317,6 +333,7 @@ func (c *Client) BuildConnectionMap() {
 
 	c.connections = connections
 	c.connectionsByKey = indexByKey
+	c.initResolverRecheckMeta()
 	c.rebuildBalancer()
 }
 
@@ -410,4 +427,31 @@ func (c *Client) activeStreamCount() int {
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
 	return len(c.streams)
+}
+
+func (c *Client) connectionPtrByKey(serverKey string) *Connection {
+	if c == nil {
+		return nil
+	}
+	idx, ok := c.connectionsByKey[strings.TrimSpace(serverKey)]
+	if !ok || idx < 0 || idx >= len(c.connections) {
+		return nil
+	}
+	return &c.connections[idx]
+}
+
+func (c *Client) startResolverHealthRuntime(ctx context.Context) {
+	if c == nil {
+		return
+	}
+
+	c.resolverHealthMu.Lock()
+	if c.healthRuntimeRun {
+		c.resolverHealthMu.Unlock()
+		return
+	}
+	c.healthRuntimeRun = true
+	c.resolverHealthMu.Unlock()
+
+	go c.runResolverHealthLoop(ctx)
 }
