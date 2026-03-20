@@ -34,9 +34,11 @@ func (c *Client) RunLocalDNSListener(ctx context.Context) error {
 		IP:   net.ParseIP(c.cfg.LocalDNSIP),
 		Port: c.cfg.LocalDNSPort,
 	})
+
 	if err != nil {
 		return err
 	}
+
 	defer conn.Close()
 
 	c.log.Infof(
@@ -55,11 +57,9 @@ func (c *Client) RunLocalDNSListener(ctx context.Context) error {
 
 	var workerWG sync.WaitGroup
 	for range c.cfg.LocalDNSWorkers {
-		workerWG.Add(1)
-		go func() {
-			defer workerWG.Done()
+		workerWG.Go(func() {
 			c.localDNSWorker(ctx, conn, queue, &packetPool)
-		}()
+		})
 	}
 
 	go func() {

@@ -26,7 +26,9 @@ func IsSupportedTunnelDNSQuery(qType uint16, qClass uint16) bool {
 		Enums.DNS_RECORD_TYPE_SVCB,
 		Enums.DNS_RECORD_TYPE_CAA,
 		Enums.DNS_RECORD_TYPE_NAPTR,
-		Enums.DNS_RECORD_TYPE_SOA:
+		Enums.DNS_RECORD_TYPE_SOA,
+		Enums.DNS_RECORD_TYPE_HTTPS,
+		Enums.DNS_RECORD_TYPE_TLSA:
 		return true
 	default:
 		return false

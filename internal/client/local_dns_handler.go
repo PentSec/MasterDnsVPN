@@ -35,25 +35,31 @@ func (c *Client) handleDNSQueryPacket(query []byte) ([]byte, *dnsDispatchRequest
 		if err == DnsParser.ErrNotDNSRequest || err == DnsParser.ErrPacketTooShort {
 			return nil, nil
 		}
+
 		response, err := DnsParser.BuildFormatErrorResponse(query)
 		if err != nil {
 			return nil, nil
 		}
+
 		return response, nil
 	}
+
 	if !DnsParser.IsSupportedTunnelDNSQuery(metadata.QType, metadata.QClass) {
 		response, err := DnsParser.BuildNotImplementedResponseFromLite(query, metadata.Parsed)
 		if err != nil {
 			return nil, nil
 		}
+
 		return response, nil
 	}
 
 	cacheKey := dnscache.BuildKey(metadata.Domain, metadata.QType, metadata.QClass)
 	recordTypeName := ""
+
 	if c.log != nil {
 		recordTypeName = Enums.DNSRecordTypeName(metadata.QType)
 	}
+
 	now := c.now()
 	if cached, ok := c.localDNSCache.GetReady(cacheKey, query, now); ok {
 		if c.log != nil {
@@ -71,6 +77,7 @@ func (c *Client) handleDNSQueryPacket(query []byte) ([]byte, *dnsDispatchRequest
 	if err != nil {
 		response = nil
 	}
+
 	if !result.DispatchNeeded {
 		return response, nil
 	}
@@ -81,6 +88,7 @@ func (c *Client) handleDNSQueryPacket(query []byte) ([]byte, *dnsDispatchRequest
 		QType:  metadata.QType,
 		QClass: metadata.QClass,
 	}
+
 	return response, dispatch
 }
 
@@ -93,6 +101,7 @@ func (c *Client) resolveDNSQueryPacket(query []byte) []byte {
 	if c.stream0Runtime != nil && c.stream0Runtime.IsRunning() {
 		c.stream0Runtime.NotifyDNSActivity()
 	}
+
 	if c.log != nil {
 		c.log.Infof(
 			"\U0001F687 <green>Local DNS Redirected To Tunnel: <cyan>%s</cyan> (Type: <cyan>%s</cyan>)</green>",
@@ -100,6 +109,7 @@ func (c *Client) resolveDNSQueryPacket(query []byte) []byte {
 			Enums.DNSRecordTypeName(dispatch.QType),
 		)
 	}
+
 	c.queueDNSDispatch(dispatch)
 	return response
 }

@@ -6,6 +6,7 @@ client_config.toml
 client_resolvers.txt
 encrypt_key.txt
 local_dns_cache.json
+local_dns_cache.bin
 *.key
 *.pem
 *.crt

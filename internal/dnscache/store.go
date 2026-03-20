@@ -9,12 +9,14 @@ package dnscache
 
 import (
 	"container/list"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +25,11 @@ type Status uint8
 const (
 	StatusPending Status = iota + 1
 	StatusReady
+)
+
+const (
+	shardCount = 32
+	shardMask  = shardCount - 1
 )
 
 type Entry struct {
@@ -42,30 +49,24 @@ type LookupResult struct {
 	DispatchNeeded bool
 }
 
-type Store struct {
-	maxRecords     int
-	cacheTTL       time.Duration
-	pendingTimeout time.Duration
-	items          map[string]*list.Element
-	order          *list.List
-	pendingCount   int
-	mu             sync.Mutex
-	dirty          bool
-}
-
 type cacheNode struct {
 	key   string
 	entry Entry
 }
 
-type diskEntry struct {
-	Key           string `json:"key"`
-	Domain        string `json:"domain"`
-	QuestionType  uint16 `json:"question_type"`
-	QuestionClass uint16 `json:"question_class"`
-	Response      string `json:"response"`
-	CreatedAt     int64  `json:"created_at"`
-	LastUsedAt    int64  `json:"last_used_at"`
+type shard struct {
+	items map[string]*list.Element
+	order *list.List
+	mu    sync.RWMutex
+}
+
+type Store struct {
+	maxRecords     int
+	cacheTTL       time.Duration
+	pendingTimeout time.Duration
+	shards         [shardCount]shard
+	pendingTotal   atomic.Uint64
+	dirty          atomic.Uint64 // used as a flag/counter
 }
 
 func New(maxRecords int, cacheTTL time.Duration, pendingTimeout time.Duration) *Store {
@@ -78,22 +79,30 @@ func New(maxRecords int, cacheTTL time.Duration, pendingTimeout time.Duration) *
 	if pendingTimeout <= 0 {
 		pendingTimeout = 30 * time.Second
 	}
-	return &Store{
+	s := &Store{
 		maxRecords:     maxRecords,
 		cacheTTL:       cacheTTL,
 		pendingTimeout: pendingTimeout,
-		items:          make(map[string]*list.Element, maxRecords),
-		order:          list.New(),
 	}
+	for i := 0; i < shardCount; i++ {
+		s.shards[i].items = make(map[string]*list.Element, maxRecords/shardCount+1)
+		s.shards[i].order = list.New()
+	}
+	return s
 }
 
-func BuildKey(domain string, qType uint16, qClass uint16) []byte {
-	key := make([]byte, 5+len(domain))
+func BuildKey(domain string, qType uint16, qClass uint16) string {
+	key := make([]byte, 4+len(domain))
 	binary.BigEndian.PutUint16(key[0:2], qType)
 	binary.BigEndian.PutUint16(key[2:4], qClass)
-	key[4] = 0
-	copy(key[5:], domain)
-	return key
+	copy(key[4:], domain)
+	return string(key)
+}
+
+func getShardIndex(key string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return int(h.Sum32() & shardMask)
 }
 
 func PatchResponseForQuery(rawResponse []byte, rawQuery []byte) []byte {
@@ -116,21 +125,23 @@ func PatchResponseForQuery(rawResponse []byte, rawQuery []byte) []byte {
 	return patched
 }
 
-func (s *Store) LookupOrCreatePending(cacheKey []byte, domain string, qType uint16, qClass uint16, now time.Time) LookupResult {
-	if s == nil || len(cacheKey) == 0 {
+func (s *Store) LookupOrCreatePending(key string, domain string, qType uint16, qClass uint16, now time.Time) LookupResult {
+	if s == nil || key == "" {
 		return LookupResult{}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shardIdx := getShardIndex(key)
+	shard := &s.shards[shardIdx]
 
-	key := string(cacheKey)
-	if element, ok := s.items[key]; ok {
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if element, ok := shard.items[key]; ok {
 		node := element.Value.(*cacheNode)
 		if !s.isExpired(&node.entry, now) {
-			s.touchEntry(&node.entry, now)
+			s.touchEntryLocked(shard, &node.entry, now)
 			if node.entry.Status == StatusReady {
-				s.order.MoveToBack(element)
+				shard.order.MoveToBack(element)
 				return LookupResult{
 					Status:   StatusReady,
 					Response: PatchResponseForQuery(node.entry.Response, nil),
@@ -138,18 +149,18 @@ func (s *Store) LookupOrCreatePending(cacheKey []byte, domain string, qType uint
 			}
 			if now.Sub(node.entry.LastDispatchAt) >= s.pendingTimeout {
 				node.entry.LastDispatchAt = now
-				s.dirty = true
-				s.order.MoveToBack(element)
+				s.dirty.Add(1)
+				shard.order.MoveToBack(element)
 				return LookupResult{
 					Status:         StatusPending,
 					DispatchNeeded: true,
 				}
 			}
-			s.order.MoveToBack(element)
+			shard.order.MoveToBack(element)
 			return LookupResult{Status: StatusPending}
 		}
 
-		s.removeElement(element)
+		s.removeElementLocked(shard, element)
 	}
 
 	entry := Entry{
@@ -161,63 +172,70 @@ func (s *Store) LookupOrCreatePending(cacheKey []byte, domain string, qType uint
 		LastUsedAt:     now,
 		LastDispatchAt: now,
 	}
-	element := s.order.PushBack(&cacheNode{key: key, entry: entry})
-	s.items[key] = element
-	s.pendingCount++
-	s.dirty = true
-	s.evictIfNeeded()
+	element := shard.order.PushBack(&cacheNode{key: key, entry: entry})
+	shard.items[key] = element
+	s.pendingTotal.Add(1)
+	s.dirty.Add(1)
+	s.evictIfNeededLocked(shard)
 	return LookupResult{
 		Status:         StatusPending,
 		DispatchNeeded: true,
 	}
 }
 
-func (s *Store) GetReady(cacheKey []byte, rawQuery []byte, now time.Time) ([]byte, bool) {
-	if s == nil || len(cacheKey) == 0 {
+func (s *Store) GetReady(key string, rawQuery []byte, now time.Time) ([]byte, bool) {
+	if s == nil || key == "" {
 		return nil, false
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shardIdx := getShardIndex(key)
+	shard := &s.shards[shardIdx]
 
-	element, ok := s.items[string(cacheKey)]
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	element, ok := shard.items[key]
 	if !ok {
 		return nil, false
 	}
 
 	node := element.Value.(*cacheNode)
 	if s.isExpired(&node.entry, now) {
-		s.removeElement(element)
+		s.removeElementLocked(shard, element)
 		return nil, false
 	}
 	if node.entry.Status != StatusReady || len(node.entry.Response) == 0 {
-		s.touchEntry(&node.entry, now)
-		s.order.MoveToBack(element)
+		s.touchEntryLocked(shard, &node.entry, now)
+		shard.order.MoveToBack(element)
 		return nil, false
 	}
 
-	s.touchEntry(&node.entry, now)
-	s.order.MoveToBack(element)
+	s.touchEntryLocked(shard, &node.entry, now)
+	shard.order.MoveToBack(element)
 	return PatchResponseForQuery(node.entry.Response, rawQuery), true
 }
 
-func (s *Store) SetReady(cacheKey []byte, domain string, qType uint16, qClass uint16, rawResponse []byte, now time.Time) {
-	if s == nil || len(cacheKey) == 0 || len(rawResponse) < 2 {
+func (s *Store) SetReady(key string, domain string, qType uint16, qClass uint16, rawResponse []byte, now time.Time) {
+	if s == nil || key == "" || len(rawResponse) < 2 {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shardIdx := getShardIndex(key)
+	shard := &s.shards[shardIdx]
 
-	key := string(cacheKey)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
 	normalized := make([]byte, len(rawResponse))
 	copy(normalized, rawResponse)
 	normalized[0], normalized[1] = 0, 0
 
-	if element, ok := s.items[key]; ok {
+	if element, ok := shard.items[key]; ok {
 		node := element.Value.(*cacheNode)
-		if node.entry.Status == StatusPending && s.pendingCount > 0 {
-			s.pendingCount--
+		if node.entry.Status == StatusPending {
+			if count := s.pendingTotal.Load(); count > 0 {
+				s.pendingTotal.Add(^uint64(0)) // Decrement
+			}
 		}
 		node.entry.Domain = domain
 		node.entry.QuestionType = qType
@@ -228,8 +246,8 @@ func (s *Store) SetReady(cacheKey []byte, domain string, qType uint16, qClass ui
 		}
 		node.entry.LastUsedAt = now
 		node.entry.Response = normalized
-		s.dirty = true
-		s.order.MoveToBack(element)
+		s.dirty.Add(1)
+		shard.order.MoveToBack(element)
 		return
 	}
 
@@ -242,21 +260,24 @@ func (s *Store) SetReady(cacheKey []byte, domain string, qType uint16, qClass ui
 		LastUsedAt:    now,
 		Response:      normalized,
 	}
-	element := s.order.PushBack(&cacheNode{key: key, entry: entry})
-	s.items[key] = element
-	s.dirty = true
-	s.evictIfNeeded()
+	element := shard.order.PushBack(&cacheNode{key: key, entry: entry})
+	shard.items[key] = element
+	s.dirty.Add(1)
+	s.evictIfNeededLocked(shard)
 }
 
-func (s *Store) Snapshot(cacheKey []byte) (Entry, bool) {
-	if s == nil || len(cacheKey) == 0 {
+func (s *Store) Snapshot(key string) (Entry, bool) {
+	if s == nil || key == "" {
 		return Entry{}, false
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shardIdx := getShardIndex(key)
+	shard := &s.shards[shardIdx]
 
-	element, ok := s.items[string(cacheKey)]
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+
+	element, ok := shard.items[key]
 	if !ok {
 		return Entry{}, false
 	}
@@ -272,9 +293,7 @@ func (s *Store) HasPending() bool {
 	if s == nil {
 		return false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.pendingCount > 0
+	return s.pendingTotal.Load() > 0
 }
 
 func (s *Store) ClearPending() {
@@ -282,16 +301,18 @@ func (s *Store) ClearPending() {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for element := s.order.Front(); element != nil; {
-		next := element.Next()
-		node := element.Value.(*cacheNode)
-		if node.entry.Status == StatusPending {
-			s.removeElement(element)
+	for i := 0; i < shardCount; i++ {
+		shard := &s.shards[i]
+		shard.mu.Lock()
+		for element := shard.order.Front(); element != nil; {
+			next := element.Next()
+			node := element.Value.(*cacheNode)
+			if node.entry.Status == StatusPending {
+				s.removeElementLocked(shard, element)
+			}
+			element = next
 		}
-		element = next
+		shard.mu.Unlock()
 	}
 }
 
@@ -305,97 +326,114 @@ func (s *Store) isExpired(entry *Entry, now time.Time) bool {
 	return now.Sub(entry.LastUsedAt) >= s.cacheTTL
 }
 
-func (s *Store) evictIfNeeded() {
-	for len(s.items) > s.maxRecords {
-		front := s.order.Front()
+func (s *Store) evictIfNeededLocked(shard *shard) {
+	limit := s.maxRecords / shardCount
+	if limit < 1 {
+		limit = 1
+	}
+	for len(shard.items) > limit {
+		front := shard.order.Front()
 		if front == nil {
 			return
 		}
-		s.removeElement(front)
+		s.removeElementLocked(shard, front)
 	}
 }
 
-func (s *Store) removeElement(element *list.Element) {
+func (s *Store) removeElementLocked(shard *shard, element *list.Element) {
 	if element == nil {
 		return
 	}
 	node := element.Value.(*cacheNode)
-	if node.entry.Status == StatusPending && s.pendingCount > 0 {
-		s.pendingCount--
+	if node.entry.Status == StatusPending {
+		if count := s.pendingTotal.Load(); count > 0 {
+			s.pendingTotal.Add(^uint64(0)) // Decrement
+		}
 	}
-	delete(s.items, node.key)
-	s.order.Remove(element)
-	s.dirty = true
+	delete(shard.items, node.key)
+	shard.order.Remove(element)
+	s.dirty.Add(1)
 }
+
+const (
+	binaryMagic   uint32 = 0x444E5343 // "DNSC"
+	binaryVersion uint16 = 1
+)
 
 func (s *Store) LoadFromFile(path string, now time.Time) (int, error) {
 	if s == nil || path == "" {
 		return 0, nil
 	}
 
-	raw, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
 		}
 		return 0, err
 	}
+	defer file.Close()
 
-	var payload []diskEntry
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	var magic uint32
+	if err := binary.Read(file, binary.BigEndian, &magic); err != nil {
+		return 0, err
+	}
+	if magic != binaryMagic {
+		return 0, fmt.Errorf("invalid magic number")
+	}
+
+	var version uint16
+	if err := binary.Read(file, binary.BigEndian, &version); err != nil {
+		return 0, err
+	}
+	if version != binaryVersion {
+		return 0, fmt.Errorf("unsupported version")
+	}
+
+	var count uint32
+	if err := binary.Read(file, binary.BigEndian, &count); err != nil {
 		return 0, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.items = make(map[string]*list.Element, s.maxRecords)
-	s.order.Init()
-	s.pendingCount = 0
+	s.pendingTotal.Store(0)
+	for i := 0; i < shardCount; i++ {
+		s.shards[i].mu.Lock()
+		s.shards[i].items = make(map[string]*list.Element, s.maxRecords/shardCount+1)
+		s.shards[i].order.Init()
+		s.shards[i].mu.Unlock()
+	}
 
 	loaded := 0
-	for _, item := range payload {
-		if item.Key == "" || item.Response == "" {
+	buf := make([]byte, 4096)
+	for i := 0; i < int(count); i++ {
+		entry, key, err := readBinaryEntry(file, buf)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
 			continue
 		}
 
-		keyBytes, err := base64.StdEncoding.DecodeString(item.Key)
-		if err != nil || len(keyBytes) == 0 {
-			continue
-		}
-		response, err := base64.StdEncoding.DecodeString(item.Response)
-		if err != nil || len(response) < 2 {
-			continue
-		}
-
-		lastUsedAt := time.Unix(item.LastUsedAt, 0)
-		if lastUsedAt.IsZero() {
-			continue
-		}
-
-		entry := Entry{
-			Domain:        item.Domain,
-			QuestionType:  item.QuestionType,
-			QuestionClass: item.QuestionClass,
-			Status:        StatusReady,
-			CreatedAt:     time.Unix(item.CreatedAt, 0),
-			LastUsedAt:    lastUsedAt,
-			Response:      response,
-		}
-		if entry.CreatedAt.IsZero() {
-			entry.CreatedAt = lastUsedAt
-		}
 		if s.isExpired(&entry, now) {
 			continue
 		}
 
-		key := string(keyBytes)
-		element := s.order.PushBack(&cacheNode{key: key, entry: entry})
-		s.items[key] = element
+		shardIdx := getShardIndex(key)
+		shard := &s.shards[shardIdx]
+		shard.mu.Lock()
+		element := shard.order.PushBack(&cacheNode{key: key, entry: entry})
+		shard.items[key] = element
+		shard.mu.Unlock()
 		loaded++
 	}
-	s.evictIfNeeded()
-	s.dirty = false
+
+	for i := 0; i < shardCount; i++ {
+		s.shards[i].mu.Lock()
+		s.evictIfNeededLocked(&s.shards[i])
+		s.shards[i].mu.Unlock()
+	}
+
+	s.dirty.Store(0)
 	return loaded, nil
 }
 
@@ -404,74 +442,147 @@ func (s *Store) SaveToFile(path string, now time.Time) (int, error) {
 		return 0, nil
 	}
 
-	s.mu.Lock()
-	s.purgeExpiredLocked(now)
-	if !s.dirty {
-		s.mu.Unlock()
+	if s.dirty.Load() == 0 {
 		return 0, nil
 	}
 
-	payload := make([]diskEntry, 0, len(s.items))
-	for element := s.order.Front(); element != nil; element = element.Next() {
-		node := element.Value.(*cacheNode)
-		if node.entry.Status != StatusReady || len(node.entry.Response) < 2 {
-			continue
-		}
-		payload = append(payload, diskEntry{
-			Key:           base64.StdEncoding.EncodeToString([]byte(node.key)),
-			Domain:        node.entry.Domain,
-			QuestionType:  node.entry.QuestionType,
-			QuestionClass: node.entry.QuestionClass,
-			Response:      base64.StdEncoding.EncodeToString(node.entry.Response),
-			CreatedAt:     node.entry.CreatedAt.Unix(),
-			LastUsedAt:    node.entry.LastUsedAt.Unix(),
-		})
+	tempPath := path + ".tmp"
+	file, err := os.Create(tempPath)
+	if err != nil {
+		return 0, err
 	}
-	s.mu.Unlock()
+	defer file.Close()
+
+	if err := binary.Write(file, binary.BigEndian, binaryMagic); err != nil {
+		return 0, err
+	}
+	if err := binary.Write(file, binary.BigEndian, binaryVersion); err != nil {
+		return 0, err
+	}
+
+	var total uint32
+	for i := 0; i < shardCount; i++ {
+		shard := &s.shards[i]
+		shard.mu.RLock()
+		for element := shard.order.Front(); element != nil; element = element.Next() {
+			node := element.Value.(*cacheNode)
+			if node.entry.Status == StatusReady && !s.isExpired(&node.entry, now) {
+				total++
+			}
+		}
+		shard.mu.RUnlock()
+	}
+
+	if err := binary.Write(file, binary.BigEndian, total); err != nil {
+		return 0, err
+	}
+
+	saved := 0
+	for i := 0; i < shardCount; i++ {
+		shard := &s.shards[i]
+		shard.mu.RLock()
+		for element := shard.order.Front(); element != nil; element = element.Next() {
+			node := element.Value.(*cacheNode)
+			if node.entry.Status == StatusReady && !s.isExpired(&node.entry, now) {
+				if err := writeBinaryEntry(file, node.key, &node.entry); err == nil {
+					saved++
+				}
+			}
+		}
+		shard.mu.RUnlock()
+	}
+
+	if err := file.Close(); err != nil {
+		return 0, err
+	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return 0, err
 	}
 
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return 0, err
-	}
-
-	tempPath := path + ".tmp"
-	if err := os.WriteFile(tempPath, raw, 0o644); err != nil {
-		return 0, err
-	}
 	if err := os.Rename(tempPath, path); err != nil {
 		_ = os.Remove(tempPath)
 		return 0, err
 	}
 
-	s.mu.Lock()
-	s.dirty = false
-	s.mu.Unlock()
-	return len(payload), nil
+	s.dirty.Store(0)
+	return saved, nil
 }
 
-func (s *Store) touchEntry(entry *Entry, now time.Time) {
+func (s *Store) touchEntryLocked(shard *shard, entry *Entry, now time.Time) {
 	if entry == nil {
 		return
 	}
 	if entry.LastUsedAt.IsZero() || now.Sub(entry.LastUsedAt) >= time.Second {
 		entry.LastUsedAt = now
-		s.dirty = true
+		s.dirty.Add(1)
 		return
 	}
 	entry.LastUsedAt = now
 }
 
-func (s *Store) purgeExpiredLocked(now time.Time) {
-	for element := s.order.Front(); element != nil; {
-		next := element.Next()
-		node := element.Value.(*cacheNode)
-		if s.isExpired(&node.entry, now) {
-			s.removeElement(element)
-		}
-		element = next
+func readBinaryEntry(r io.Reader, buf []byte) (Entry, string, error) {
+	var keyLen uint16
+	if err := binary.Read(r, binary.BigEndian, &keyLen); err != nil {
+		return Entry{}, "", err
 	}
+	keyBuf := make([]byte, keyLen)
+	if _, err := io.ReadFull(r, keyBuf); err != nil {
+		return Entry{}, "", err
+	}
+
+	var domainLen uint16
+	if err := binary.Read(r, binary.BigEndian, &domainLen); err != nil {
+		return Entry{}, "", err
+	}
+	domainBuf := make([]byte, domainLen)
+	if _, err := io.ReadFull(r, domainBuf); err != nil {
+		return Entry{}, "", err
+	}
+
+	var qType, qClass uint16
+	_ = binary.Read(r, binary.BigEndian, &qType)
+	_ = binary.Read(r, binary.BigEndian, &qClass)
+
+	var resLen uint16
+	if err := binary.Read(r, binary.BigEndian, &resLen); err != nil {
+		return Entry{}, "", err
+	}
+	resBuf := make([]byte, resLen)
+	if _, err := io.ReadFull(r, resBuf); err != nil {
+		return Entry{}, "", err
+	}
+
+	var createdAt, lastUsedAt int64
+	_ = binary.Read(r, binary.BigEndian, &createdAt)
+	_ = binary.Read(r, binary.BigEndian, &lastUsedAt)
+
+	return Entry{
+		Domain:        string(domainBuf),
+		QuestionType:  qType,
+		QuestionClass: qClass,
+		Status:        StatusReady,
+		CreatedAt:     time.Unix(createdAt, 0),
+		LastUsedAt:    time.Unix(lastUsedAt, 0),
+		Response:      resBuf,
+	}, string(keyBuf), nil
+}
+
+func writeBinaryEntry(w io.Writer, key string, entry *Entry) error {
+	_ = binary.Write(w, binary.BigEndian, uint16(len(key)))
+	_, _ = w.Write([]byte(key))
+
+	_ = binary.Write(w, binary.BigEndian, uint16(len(entry.Domain)))
+	_, _ = w.Write([]byte(entry.Domain))
+
+	_ = binary.Write(w, binary.BigEndian, entry.QuestionType)
+	_ = binary.Write(w, binary.BigEndian, entry.QuestionClass)
+
+	_ = binary.Write(w, binary.BigEndian, uint16(len(entry.Response)))
+	_, _ = w.Write(entry.Response)
+
+	_ = binary.Write(w, binary.BigEndian, entry.CreatedAt.Unix())
+	_ = binary.Write(w, binary.BigEndian, entry.LastUsedAt.Unix())
+
+	return nil
 }

@@ -41,6 +41,7 @@ func startClientListener(wg *sync.WaitGroup, errCh chan<- error, stop context.Ca
 	if wg == nil || run == nil {
 		return
 	}
+
 	wg.Go(func() {
 		if err := run(runCtx); err != nil {
 			select {
@@ -183,9 +184,11 @@ func main() {
 	if cfg.LocalDNSEnabled {
 		startClientListener(&listenersWG, errCh, stop, "local dns listener", runCtx, app.RunLocalDNSListener)
 	}
-	if cfg.ProtocolType == "SOCKS5" {
+
+	switch cfg.ProtocolType {
+	case "SOCKS5":
 		startClientListener(&listenersWG, errCh, stop, "local socks5 listener", runCtx, app.RunLocalSOCKS5Listener)
-	} else if cfg.ProtocolType == "TCP" {
+	case "TCP":
 		startClientListener(&listenersWG, errCh, stop, "local tcp listener", runCtx, app.RunLocalTCPListener)
 	}
 

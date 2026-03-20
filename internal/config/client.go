@@ -307,7 +307,7 @@ func (c ClientConfig) ResolversPath() string {
 }
 
 func (c ClientConfig) LocalDNSCachePath() string {
-	return filepath.Join(c.ConfigDir, "local_dns_cache.json")
+	return filepath.Join(c.ConfigDir, "local_dns_cache.bin")
 }
 
 func normalizeClientDomains(domains []string) []string {

@@ -19,7 +19,7 @@ func (c *Client) hasPersistableLocalDNSCache() bool {
 		c.localDNSCachePath != ""
 }
 
-func (c *Client) persistResolvedLocalDNSCacheEntry(cacheKey []byte, domain string, qType uint16, qClass uint16, rawResponse []byte, now time.Time) {
+func (c *Client) persistResolvedLocalDNSCacheEntry(cacheKey string, domain string, qType uint16, qClass uint16, rawResponse []byte, now time.Time) {
 	if c == nil || c.localDNSCache == nil {
 		return
 	}
@@ -34,6 +34,7 @@ func (c *Client) ensureLocalDNSCacheLoaded() {
 	if !c.hasPersistableLocalDNSCache() {
 		return
 	}
+
 	c.localDNSCacheLoadOnce.Do(func() {
 		c.loadLocalDNSCache()
 	})
@@ -43,6 +44,7 @@ func (c *Client) ensureLocalDNSCachePersistence(ctx context.Context) {
 	if !c.hasPersistableLocalDNSCache() {
 		return
 	}
+
 	c.ensureLocalDNSCacheLoaded()
 	c.localDNSCacheFlushOnce.Do(func() {
 		go c.runLocalDNSCacheFlushLoop(ctx)
@@ -61,6 +63,7 @@ func (c *Client) loadLocalDNSCache() {
 		}
 		return
 	}
+
 	if loaded > 0 && c.log != nil {
 		c.log.Infof("\U0001F4BE <green>Local DNS Cache Loaded: <cyan>%d</cyan> records.</green>", loaded)
 	}
@@ -78,6 +81,7 @@ func (c *Client) flushLocalDNSCache() {
 		}
 		return
 	}
+
 	if saved > 0 && c.log != nil {
 		c.log.Debugf("\U0001F4BE <green>Local DNS Cache Flushed: <cyan>%d</cyan> records.</green>", saved)
 	}
