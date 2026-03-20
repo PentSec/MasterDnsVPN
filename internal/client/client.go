@@ -70,6 +70,7 @@ type Client struct {
 	mtuOutputMu               sync.Mutex
 
 	exchangeQueryFn     func(Connection, []byte, time.Duration) ([]byte, error)
+	sendOneWayPacketFn  func(Connection, []byte, time.Time) error
 	fragmentLimits      sync.Map
 	stream0Runtime      *stream0Runtime
 	streamsMu           sync.RWMutex

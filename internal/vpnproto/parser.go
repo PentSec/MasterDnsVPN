@@ -219,6 +219,7 @@ func buildPacketFlags() [256]uint8 {
 		Enums.PACKET_MTU_DOWN_REQ,
 		Enums.PACKET_SESSION_INIT,
 		Enums.PACKET_SESSION_ACCEPT,
+		Enums.PACKET_SESSION_CLOSE,
 		Enums.PACKET_PING,
 		Enums.PACKET_PONG,
 		Enums.PACKET_ERROR_DROP,

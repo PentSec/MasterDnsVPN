@@ -313,13 +313,16 @@ type udpQueryTransport struct {
 	buffer []byte
 }
 
-func newUDPQueryTransport(resolverLabel string) (*udpQueryTransport, error) {
+func dialUDPResolver(resolverLabel string) (*net.UDPConn, error) {
 	addr, err := net.ResolveUDPAddr("udp", resolverLabel)
 	if err != nil {
 		return nil, err
 	}
+	return net.DialUDP("udp", nil, addr)
+}
 
-	conn, err := net.DialUDP("udp", nil, addr)
+func newUDPQueryTransport(resolverLabel string) (*udpQueryTransport, error) {
+	conn, err := dialUDPResolver(resolverLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -327,6 +330,24 @@ func newUDPQueryTransport(resolverLabel string) (*udpQueryTransport, error) {
 		conn:   conn,
 		buffer: make([]byte, EDnsSafeUDPSize),
 	}, nil
+}
+
+func sendOneWayUDPQuery(resolverLabel string, packet []byte, deadline time.Time) error {
+	if len(packet) == 0 {
+		return nil
+	}
+
+	conn, err := dialUDPResolver(resolverLabel)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	_, err = conn.Write(packet)
+	return err
 }
 
 func exchangeUDPQuery(transport *udpQueryTransport, packet []byte, timeout time.Duration) ([]byte, error) {

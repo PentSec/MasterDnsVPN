@@ -112,6 +112,8 @@ func PacketTypeName(packetType uint8) string {
 		return "DNS_QUERY_REQ_ACK"
 	case PACKET_DNS_QUERY_RES_ACK:
 		return "DNS_QUERY_RES_ACK"
+	case PACKET_SESSION_CLOSE:
+		return "SESSION_CLOSE"
 	case PACKET_ERROR_DROP:
 		return "ERROR_DROP"
 	default:

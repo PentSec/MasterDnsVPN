@@ -52,6 +52,7 @@ const (
 	PACKET_DNS_QUERY_RES                       = 0x2A
 	PACKET_DNS_QUERY_REQ_ACK                   = 0x2B
 	PACKET_DNS_QUERY_RES_ACK                   = 0x2C
+	PACKET_SESSION_CLOSE                       = 0x2D
 	PACKET_ERROR_DROP                          = 0xFF
 )
 

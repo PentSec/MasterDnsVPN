@@ -277,10 +277,7 @@ func (s *Server) sessionCleanupLoop(ctx context.Context) {
 				continue
 			}
 			for _, sessionID := range expired {
-				s.streams.RemoveSession(sessionID)
-				s.streamOutbound.RemoveSession(sessionID)
-				s.deferredSession.RemoveSession(sessionID)
-				s.removeDNSQueryFragmentsForSession(sessionID)
+				s.cleanupClosedSession(sessionID)
 			}
 			s.log.Infof(
 				"\U0001F4E1 <green>Expired Sessions Cleaned, Count: <cyan>%d</cyan></green>",
@@ -395,6 +392,11 @@ func (s *Server) handleTunnelCandidate(packet []byte, parsed DnsParser.LitePacke
 		return buildNoDataResponseLite(packet, parsed)
 	}
 
+	if vpnPacket.PacketType == Enums.PACKET_SESSION_CLOSE {
+		s.handleSessionCloseNotice(vpnPacket, time.Now())
+		return nil
+	}
+
 	if !isPreSessionRequestType(vpnPacket.PacketType) {
 		validation := s.validatePostSessionPacket(packet, decision.RequestName, vpnPacket)
 		if !validation.ok {
@@ -482,6 +484,28 @@ func (s *Server) validatePostSessionPacket(questionPacket []byte, requestName st
 
 	return postSessionValidation{
 		response: s.buildInvalidSessionErrorResponse(questionPacket, requestName, vpnPacket.SessionID, validation.Lookup.ResponseMode),
+	}
+}
+
+func (s *Server) handleSessionCloseNotice(vpnPacket VpnProto.Packet, now time.Time) {
+	if s == nil || vpnPacket.SessionID == 0 {
+		return
+	}
+
+	lookup, known := s.sessions.Lookup(vpnPacket.SessionID)
+	if !known || lookup.State != sessionLookupActive || lookup.Cookie != vpnPacket.SessionCookie {
+		return
+	}
+	if !s.sessions.Close(vpnPacket.SessionID, now, s.cfg.ClosedSessionRetention()) {
+		return
+	}
+
+	s.cleanupClosedSession(vpnPacket.SessionID)
+	if s.log != nil {
+		s.log.Infof(
+			"\U0001F6AA <green>Session Closed By Client, Session: <cyan>%d</cyan></green>",
+			vpnPacket.SessionID,
+		)
 	}
 }
 
@@ -583,6 +607,16 @@ func (s *Server) queueMainSessionPacket(sessionID uint8, packet VpnProto.Packet)
 		return false
 	}
 	return s.streamOutbound.Enqueue(sessionID, arq.QueueTargetMain, packet)
+}
+
+func (s *Server) cleanupClosedSession(sessionID uint8) {
+	if s == nil || sessionID == 0 {
+		return
+	}
+	s.streams.RemoveSession(sessionID)
+	s.streamOutbound.RemoveSession(sessionID)
+	s.deferredSession.RemoveSession(sessionID)
+	s.removeDNSQueryFragmentsForSession(sessionID)
 }
 
 func (s *Server) serveQueuedOrPong(questionPacket []byte, requestName string, sessionRecord *sessionRuntimeView, now time.Time) []byte {
@@ -945,6 +979,9 @@ func (s *Server) processDeferredDNSQuery(sessionID uint8, sequenceNum uint16, do
 }
 
 func (s *Server) processDeferredStreamSyn(vpnPacket VpnProto.Packet, sessionRecord *sessionRuntimeView) {
+	if !s.sessions.HasActive(vpnPacket.SessionID) {
+		return
+	}
 	now := time.Now()
 	if VpnProto.IsTCPForwardSynPayload(vpnPacket.Payload) {
 		if s.cfg.ForwardIP == "" || s.cfg.ForwardPort <= 0 {
@@ -1000,6 +1037,9 @@ func (s *Server) processDeferredStreamSyn(vpnPacket VpnProto.Packet, sessionReco
 }
 
 func (s *Server) processDeferredSOCKS5Syn(vpnPacket VpnProto.Packet, sessionRecord *sessionRuntimeView) {
+	if !s.sessions.HasActive(vpnPacket.SessionID) {
+		return
+	}
 	now := time.Now()
 
 	target, err := SocksProto.ParseTargetPayload(vpnPacket.Payload)
@@ -1094,6 +1134,9 @@ func (s *Server) processDeferredSOCKS5Syn(vpnPacket VpnProto.Packet, sessionReco
 }
 
 func (s *Server) processDeferredStreamData(vpnPacket VpnProto.Packet) {
+	if !s.sessions.HasActive(vpnPacket.SessionID) {
+		return
+	}
 	now := time.Now()
 	streamRecord, ok, isNew := s.streams.ClassifyInboundData(vpnPacket.SessionID, vpnPacket.StreamID, vpnPacket.SequenceNum, now)
 	if !ok || streamRecord == nil {

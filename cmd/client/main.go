@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"masterdnsvpn-go/internal/client"
 	"masterdnsvpn-go/internal/logger"
@@ -138,12 +139,24 @@ func main() {
 
 	log.Infof("\U0001F3AF <green>Client Bootstrap Ready</green>")
 
+	var sessionCloseOnce sync.Once
+	notifySessionClose := func() {
+		sessionCloseOnce.Do(func() {
+			app.BestEffortSessionClose(time.Second)
+		})
+	}
+
 	if !cfg.LocalDNSEnabled && !cfg.LocalSOCKS5Enabled && cfg.ProtocolType != "TCP" {
+		notifySessionClose()
 		return
 	}
 
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() {
+		<-runCtx.Done()
+		notifySessionClose()
+	}()
 
 	enabledListeners := enabledClientListenerCount(cfg.LocalDNSEnabled, cfg.LocalSOCKS5Enabled, cfg.ProtocolType)
 	errCh := make(chan error, enabledListeners)
@@ -162,6 +175,7 @@ func main() {
 	}
 
 	listenersWG.Wait()
+	notifySessionClose()
 	select {
 	case err := <-errCh:
 		exitWithStderrf("%v\n", err)
