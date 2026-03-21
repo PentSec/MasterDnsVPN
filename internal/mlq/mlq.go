@@ -153,3 +153,51 @@ func (m *MultiLevelQueue[T]) Clear(callback func(T)) {
 	m.census = make(map[uint32]T)
 	m.bitmask = 0
 }
+
+// HighestPriority returns the highest priority level currently containing items, or -1 if empty.
+// Lower digits correspond to higher priority levels.
+func (m *MultiLevelQueue[T]) HighestPriority() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.bitmask == 0 {
+		return -1
+	}
+	return bits.TrailingZeros16(m.bitmask)
+}
+
+// PopIf retrieves the highest priority item IF and only IF it matches the given predicate condition.
+func (m *MultiLevelQueue[T]) PopIf(priority int, predicate func(T) bool, keyExtractor func(T) uint32) (T, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var zero T
+	if m.bitmask == 0 || priority < 0 || priority >= 6 {
+		return zero, false
+	}
+	if (m.bitmask & (1 << uint(priority))) == 0 {
+		return zero, false
+	}
+
+	q := &m.queues[priority]
+	if len(q.Items) == 0 {
+		m.bitmask &= ^(1 << uint(priority))
+		return zero, false
+	}
+
+	item := q.Items[0]
+	if predicate != nil && !predicate(item) {
+		return zero, false
+	}
+
+	// Allowed to pop!
+	q.Items[0] = zero // Memory safety
+	q.Items = q.Items[1:]
+
+	if keyExtractor != nil {
+		delete(m.census, keyExtractor(item))
+	}
+	if len(q.Items) == 0 {
+		m.bitmask &= ^(1 << uint(priority))
+	}
+	return item, true
+}

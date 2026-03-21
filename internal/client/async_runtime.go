@@ -122,6 +122,10 @@ func (c *Client) StartAsyncRuntime(parentCtx context.Context) error {
 		go c.asyncWriterWorker(runtimeCtx, i, conn)
 	}
 
+	// 7. Spawn Dispatcher (Fair Queuing & Packing)
+	c.asyncWG.Add(1)
+	go c.asyncStreamDispatcher(runtimeCtx)
+
 	// 7. Lifecycle cleanup.
 	c.asyncWG.Add(1)
 	go func() {
