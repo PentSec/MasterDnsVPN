@@ -111,9 +111,14 @@ type Client struct {
 	pingManager *PingManager
 
 	// DNS Management
-	localDNSCache *dnsCache.Store
-	dnsResponses  *fragmentStore.Store[dnsFragmentKey]
-	dnsWaiters    sync.Map // SequenceNum -> *net.UDPAddr
+	localDNSCache          *dnsCache.Store
+	dnsResponses           *fragmentStore.Store[dnsFragmentKey]
+	dnsWaiters             sync.Map // SequenceNum -> *net.UDPAddr
+	localDNSCachePersist   bool
+	localDNSCachePath      string
+	localDNSCacheFlushTick time.Duration
+	localDNSCacheLoadOnce  sync.Once
+	localDNSCacheFlushOnce sync.Once
 }
 
 type dnsFragmentKey struct {
@@ -254,7 +259,10 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 			time.Duration(cfg.LocalDNSCacheTTLSeconds)*time.Second,
 			time.Duration(cfg.LocalDNSPendingTimeoutSec)*time.Second,
 		),
-		dnsResponses: fragmentStore.New[dnsFragmentKey](128),
+		dnsResponses:           fragmentStore.New[dnsFragmentKey](128),
+		localDNSCachePersist:   cfg.LocalDNSCachePersist,
+		localDNSCachePath:      cfg.LocalDNSCachePath(),
+		localDNSCacheFlushTick: time.Duration(cfg.LocalDNSCacheFlushSec) * time.Second,
 	}
 	c.pingManager = newPingManager(c)
 	return c
@@ -366,6 +374,9 @@ func (c *Client) Run(ctx context.Context) error {
 	c.successMTUChecks = false
 	c.log.Infof("\U0001F504 <cyan>Starting main runtime loop...</cyan>")
 
+	// Ensure local DNS cache is loaded from file if persistence is enabled
+	c.ensureLocalDNSCacheLoaded()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -409,6 +420,9 @@ func (c *Client) Run(ctx context.Context) error {
 					c.log.Errorf("<red>❌ Async Runtime failed to launch: %v</red>", err)
 					return err
 				}
+
+				// Start DNS Cache persistence loop if enabled
+				c.ensureLocalDNSCachePersistence(ctx)
 			}
 
 			// Placeholder for the rest of the runtime logic (session management, etc.)

@@ -12,8 +12,11 @@ import (
 	"net"
 	"time"
 
+	"masterdnsvpn-go/internal/arq"
 	"masterdnsvpn-go/internal/dnscache"
 	"masterdnsvpn-go/internal/dnsparser"
+	Enums "masterdnsvpn-go/internal/enums"
+	VpnProto "masterdnsvpn-go/internal/vpnproto"
 )
 
 type DNSListener struct {
@@ -116,4 +119,134 @@ func (l *DNSListener) handleQuery(ctx context.Context, data []byte, addr *net.UD
 
 	// 3. Dispatch to Tunnel
 	l.client.dispatchDNSQueryToTunnel(data, addr)
+}
+
+func (c *Client) dispatchDNSQueryToTunnel(query []byte, addr *net.UDPAddr) {
+	if !c.SessionReady() {
+		return
+	}
+
+	c.streamsMu.RLock()
+	s0, ok := c.active_streams[0]
+	c.streamsMu.RUnlock()
+
+	if !ok || s0 == nil {
+		return
+	}
+
+	arqObj, ok := s0.Stream.(*arq.ARQ)
+	if !ok {
+		return
+	}
+
+	// Calculate target MTU for fragments
+	mtu := c.syncedUploadMTU - VpnProto.MaxHeaderRawSize()
+	if mtu < 100 {
+		mtu = 120 // Absolute minimum fallback
+	}
+
+	fragments := fragmentPayload(query, mtu)
+	total := uint8(len(fragments))
+
+	// Generate a unique sequence number for this DNS query
+	sn := uint16(c.mtuProbeCounter.Add(1) & 0xFFFF)
+
+	// Store the waiter by sequence number
+	c.dnsWaiters.Store(sn, addr)
+
+	for i, frag := range fragments {
+		fragID := uint8(i)
+
+		// Send via ARQ as a control packet
+		arqObj.SendControlPacket(Enums.PACKET_DNS_QUERY_REQ, sn, fragID, total, frag, 3, true, nil)
+	}
+
+	if c.log != nil {
+		c.log.Infof("🧳 <green>DNS Query Redirected to Tunnel: <cyan>%d</cyan> bytes, <cyan>%d</cyan> fragments (Seq: <cyan>%d</cyan>)</green>", len(query), total, sn)
+	}
+}
+
+// DNS Cache Persistence Methods
+
+func (c *Client) hasPersistableLocalDNSCache() bool {
+	return c != nil &&
+		c.localDNSCache != nil &&
+		c.localDNSCachePersist &&
+		c.localDNSCachePath != ""
+}
+
+func (c *Client) ensureLocalDNSCacheLoaded() {
+	if !c.hasPersistableLocalDNSCache() {
+		return
+	}
+
+	c.localDNSCacheLoadOnce.Do(func() {
+		c.loadLocalDNSCache()
+	})
+}
+
+func (c *Client) ensureLocalDNSCachePersistence(ctx context.Context) {
+	if !c.hasPersistableLocalDNSCache() {
+		return
+	}
+
+	c.ensureLocalDNSCacheLoaded()
+	c.localDNSCacheFlushOnce.Do(func() {
+		go c.runLocalDNSCacheFlushLoop(ctx)
+	})
+}
+
+func (c *Client) loadLocalDNSCache() {
+	if !c.hasPersistableLocalDNSCache() {
+		return
+	}
+
+	loaded, err := c.localDNSCache.LoadFromFile(c.localDNSCachePath, time.Now())
+	if err != nil {
+		if c.log != nil {
+			c.log.Warnf("💾 <yellow>Local DNS Cache <red>Load Failed:</red> %v</yellow>", err)
+		}
+		return
+	}
+
+	if loaded > 0 && c.log != nil {
+		c.log.Infof("💾 <green>Local DNS Cache Loaded: <cyan>%d</cyan> records.</green>", loaded)
+	}
+}
+
+func (c *Client) flushLocalDNSCache() {
+	if !c.hasPersistableLocalDNSCache() {
+		return
+	}
+
+	saved, err := c.localDNSCache.SaveToFile(c.localDNSCachePath, time.Now())
+	if err != nil {
+		if c.log != nil {
+			c.log.Warnf("💾 <yellow>Local DNS Cache <red>Flush Failed:</red> %v</yellow>", err)
+		}
+		return
+	}
+
+	if saved > 0 && c.log != nil {
+		c.log.Debugf("💾 <green>Local DNS Cache Flushed: <cyan>%d</cyan> records.</green>", saved)
+	}
+}
+
+func (c *Client) runLocalDNSCacheFlushLoop(ctx context.Context) {
+	if !c.hasPersistableLocalDNSCache() {
+		return
+	}
+
+	ticker := time.NewTicker(c.localDNSCacheFlushTick)
+	defer ticker.Stop()
+	defer c.flushLocalDNSCache()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.flushLocalDNSCache()
+		}
+	}
 }
