@@ -1,0 +1,36 @@
+// ==============================================================================
+// MasterDnsVPN
+// Author: MasterkinG32
+// Github: https://github.com/masterking32
+// Year: 2026
+// ==============================================================================
+package handlers
+
+import (
+	"net"
+
+	Enums "masterdnsvpn-go/internal/enums"
+	VpnProto "masterdnsvpn-go/internal/vpnproto"
+)
+
+func init() {
+	streamTypes := []uint8{
+		Enums.PACKET_STREAM_DATA,
+		Enums.PACKET_STREAM_DATA_ACK,
+		Enums.PACKET_STREAM_RESEND,
+		Enums.PACKET_STREAM_SYN,
+		Enums.PACKET_STREAM_SYN_ACK,
+		Enums.PACKET_STREAM_FIN,
+		Enums.PACKET_STREAM_FIN_ACK,
+		Enums.PACKET_STREAM_RST,
+		Enums.PACKET_STREAM_RST_ACK,
+	}
+
+	for _, pt := range streamTypes {
+		RegisterHandler(pt, handleStreamPacket)
+	}
+}
+
+func handleStreamPacket(c ClientContext, packet VpnProto.Packet, addr *net.UDPAddr) error {
+	return c.HandleStreamPacket(packet)
+}

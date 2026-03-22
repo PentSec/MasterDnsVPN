@@ -308,7 +308,7 @@ func (c *Client) CloseStream(streamID uint16) {
 	delete(c.active_streams, streamID)
 	c.streamsMu.Unlock()
 
-	if ok && s != nil {
+	if ok {
 		s.Close()
 	}
 }
@@ -319,7 +319,7 @@ func (c *Client) removeStream(streamID uint16) {
 	delete(c.active_streams, streamID)
 	c.streamsMu.Unlock()
 
-	if ok && s != nil {
+	if ok {
 		s.Close()
 	}
 }
@@ -455,7 +455,7 @@ func (c *Client) HandleSocksConnected(packet VpnProto.Packet) error {
 		return nil
 	}
 
-	if ok && s != nil && s.StatusValue() == streamStatusCancelled {
+	if ok && s.StatusValue() == streamStatusCancelled {
 		if arqObj, err := c.getStreamARQ(packet.StreamID); err == nil {
 			arqObj.MarkSocksFailed(Enums.PACKET_STREAM_RST)
 		}
@@ -489,7 +489,7 @@ func (c *Client) HandleSocksFailure(packet VpnProto.Packet) error {
 		return nil
 	}
 
-	if ok && s != nil && s.StatusValue() == streamStatusCancelled {
+	if ok && s.StatusValue() == streamStatusCancelled {
 		arqObj, err := c.getStreamARQ(packet.StreamID)
 		if err == nil {
 			arqObj.MarkSocksFailed(packet.PacketType)
