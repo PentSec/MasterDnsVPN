@@ -166,6 +166,10 @@ type ARQ struct {
 	wg     sync.WaitGroup
 }
 
+type closeWriter interface {
+	CloseWrite() error
+}
+
 // Config represents the extensive ARQ tuning configuration identically ported from Python
 type Config struct {
 	WindowSize               int
@@ -520,7 +524,6 @@ func (a *ARQ) MarkFinReceived(sn uint16) {
 	}
 	a.finReceived = true
 	a.finSeqReceived = &sn
-	a.stopLocalRead = true
 
 	if a.finSent {
 		a.setState(StateClosing)
@@ -530,6 +533,25 @@ func (a *ARQ) MarkFinReceived(sn uint16) {
 	a.mu.Unlock()
 
 	a.tryFinalizeRemoteEOF()
+}
+
+func (a *ARQ) halfCloseLocalWriter() {
+	a.mu.Lock()
+	if a.localWriteClosed || a.closed {
+		a.mu.Unlock()
+		return
+	}
+	conn := a.localConn
+	a.localWriteClosed = true
+	a.mu.Unlock()
+
+	if conn == nil {
+		return
+	}
+
+	if cw, ok := conn.(closeWriter); ok {
+		_ = cw.CloseWrite()
+	}
 }
 
 func (a *ARQ) markFinAcked(sn uint16) {
@@ -646,16 +668,7 @@ func (a *ARQ) ioLoop() {
 		a.waitWindowNotFull()
 
 		a.mu.Lock()
-		if a.finReceived && !a.stopLocalRead {
-			a.stopLocalRead = true
-			a.closeReason = "Remote FIN received; local reader stopped"
-			if a.state == StateOpen {
-				a.setState(StateHalfClosedRemote)
-			}
-		}
-
 		if a.stopLocalRead {
-			a.closeReason = "Remote FIN received; local reader stopped"
 			a.mu.Unlock()
 			break
 		}
@@ -1048,10 +1061,14 @@ func (a *ARQ) tryFinalizeRemoteEOF() {
 	}
 
 	a.remoteWriteClosed = true
+	shouldHalfCloseLocalWriter := !a.localWriteClosed
 	shouldSendFin := !a.finSent && !a.rstSent && !a.rstReceived && len(a.sndBuf) == 0
 	shouldClose := a.finSent && a.finAcked && len(a.sndBuf) == 0
 	a.mu.Unlock()
 
+	if shouldHalfCloseLocalWriter {
+		a.halfCloseLocalWriter()
+	}
 	if shouldSendFin {
 		a.initiateGracefulClose("Remote FIN fully handled")
 		return
