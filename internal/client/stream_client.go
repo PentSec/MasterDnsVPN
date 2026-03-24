@@ -8,8 +8,6 @@
 package client
 
 import (
-	"errors"
-	"io"
 	"net"
 	"sync" // Added for sync.Pool
 	"time"
@@ -70,8 +68,6 @@ type Stream_client struct {
 	pendingWatchDone     chan struct{}
 	pendingWatchOnce     sync.Once
 	pendingWatchStopOnce sync.Once
-	pendingLocalDataMu   sync.Mutex
-	pendingLocalData     [][]byte
 	socksResultMu        sync.Mutex
 }
 
@@ -141,9 +137,7 @@ func (c *Client) new_stream(streamID uint16, conn net.Conn, targetPayload []byte
 		WindowSize:               c.cfg.ARQWindowSize,
 		RTO:                      0.5,
 		MaxRTO:                   2.0,
-		IsSocks:                  c.cfg.ProtocolType == "SOCKS5",
-		IsClient:                 true,
-		InitialData:              targetPayload,
+		StartPaused:              conn != nil && streamID != 0 && c.cfg.ProtocolType == "SOCKS5",
 		EnableControlReliability: true,
 		ControlRTO:               0.5,
 		ControlMaxRTO:            2.0,
@@ -152,8 +146,6 @@ func (c *Client) new_stream(streamID uint16, conn net.Conn, targetPayload []byte
 		DataPacketTTL:            600.0,
 		MaxDataRetries:           400,
 		ControlPacketTTL:         600.0,
-		FinDrainTimeout:          300.0,
-		GracefulDrainTimeout:     600.0,
 		TerminalDrainTimeout:     60.0,
 		TerminalAckWaitTimeout:   30.0,
 		CompressionType:          c.uploadCompression,
@@ -255,7 +247,7 @@ func (s *Stream_client) cleanupResources() {
 func (s *Stream_client) Close() {
 	if s.Stream != nil {
 		if a, ok := s.Stream.(*arq.ARQ); ok {
-			a.ForceClose("Stream_client.Close cleanup")
+			a.Close("Stream_client.Close cleanup", arq.CloseOptions{Force: true})
 		}
 	}
 	s.cleanupResources()
@@ -268,7 +260,11 @@ func (s *Stream_client) CloseStream(force bool, ttl time.Duration) {
 
 	s.stopPendingSOCKSWatch(false)
 	if a, ok := s.Stream.(*arq.ARQ); ok && a != nil {
-		a.CloseStream(force, ttl)
+		a.Close("Close stream requested", arq.CloseOptions{
+			Force:   force,
+			SendRST: !force,
+			TTL:     ttl,
+		})
 		if force {
 			s.cleanupResources()
 		}
@@ -336,27 +332,6 @@ func (s *Stream_client) TerminalSince() time.Time {
 	return s.terminalSince
 }
 
-func (s *Stream_client) appendPendingLocalData(chunk []byte) {
-	if s == nil || len(chunk) == 0 {
-		return
-	}
-	buf := append([]byte(nil), chunk...)
-	s.pendingLocalDataMu.Lock()
-	s.pendingLocalData = append(s.pendingLocalData, buf)
-	s.pendingLocalDataMu.Unlock()
-}
-
-func (s *Stream_client) takePendingLocalData() [][]byte {
-	if s == nil {
-		return nil
-	}
-	s.pendingLocalDataMu.Lock()
-	chunks := s.pendingLocalData
-	s.pendingLocalData = nil
-	s.pendingLocalDataMu.Unlock()
-	return chunks
-}
-
 func (s *Stream_client) startPendingSOCKSWatch() {
 	if s == nil || s.NetConn == nil {
 		return
@@ -369,43 +344,16 @@ func (s *Stream_client) startPendingSOCKSWatch() {
 		go func() {
 			defer close(s.pendingWatchDone)
 
-			readBufSize := s.client.syncedUploadMTU
-			if readBufSize <= 0 {
-				readBufSize = 4096
-			}
-			buf := make([]byte, readBufSize)
-
 			for {
 				select {
 				case <-s.pendingWatchCancel:
 					return
-				default:
+				case <-time.After(200 * time.Millisecond):
 				}
 
 				if s.StatusValue() != streamStatusSocksConnecting {
 					return
 				}
-
-				_ = s.NetConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-				n, err := s.NetConn.Read(buf)
-				if n > 0 {
-					s.appendPendingLocalData(buf[:n])
-				}
-
-				if err == nil {
-					continue
-				}
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					continue
-				}
-
-				if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-					s.client.handlePendingSOCKSLocalClose(s.StreamID, "local SOCKS connection closed before connect")
-					return
-				}
-
-				s.client.handlePendingSOCKSLocalClose(s.StreamID, "local SOCKS connection failed before connect: "+err.Error())
-				return
 			}
 		}()
 	})
@@ -427,9 +375,8 @@ func (s *Stream_client) stopPendingSOCKSWatch(wait bool) {
 		}
 	}
 
-	// The pending watcher uses short read deadlines to probe early close/data.
-	// Clear any leftover deadline before ARQ takes over normal blocking reads,
-	// otherwise the first local read after SOCKS connect can look like a fatal error.
+	// The watcher no longer probes the socket for early payload bytes; ARQ will
+	// consume any buffered local data once ioReady flips to true.
 	if s.NetConn != nil {
 		_ = s.NetConn.SetReadDeadline(time.Time{})
 	}
@@ -478,8 +425,6 @@ func (c *Client) InitVirtualStream0() {
 		WindowSize:               c.cfg.ARQWindowSize,
 		RTO:                      0.5,
 		MaxRTO:                   2.0,
-		IsSocks:                  false,
-		IsClient:                 true,
 		IsVirtual:                true, // Bypasses internal timeout closures
 		EnableControlReliability: true,
 		ControlRTO:               0.5,
@@ -489,8 +434,6 @@ func (c *Client) InitVirtualStream0() {
 		DataPacketTTL:            999999.0,
 		MaxDataRetries:           99999,
 		ControlPacketTTL:         999999.0,
-		FinDrainTimeout:          300.0,
-		GracefulDrainTimeout:     600.0,
 		TerminalDrainTimeout:     60.0,
 		TerminalAckWaitTimeout:   30.0,
 		CompressionType:          c.uploadCompression,
@@ -518,9 +461,9 @@ func (c *Client) CloseAllStreams() {
 	for _, s := range streams {
 		if a, ok := s.Stream.(*arq.ARQ); ok {
 			if s.StreamID == 0 {
-				a.ForceClose("Session Reset (Virtual Stream 0 Force Destroy)")
+				a.Close("Session Reset (Virtual Stream 0 Force Destroy)", arq.CloseOptions{Force: true})
 			} else {
-				a.Close("Session Reset (All Streams Destroy)", false)
+				a.Close("Session Reset (All Streams Destroy)", arq.CloseOptions{Force: true})
 			}
 		}
 	}

@@ -339,10 +339,10 @@ func (c *Client) HandleStreamPacket(packet VpnProto.Packet) error {
 	case Enums.PACKET_STREAM_DATA, Enums.PACKET_STREAM_RESEND:
 		arqObj.ReceiveData(packet.SequenceNum, packet.Payload)
 	case Enums.PACKET_STREAM_FIN:
-		arqObj.MarkFinReceived(packet.SequenceNum)
+		arqObj.MarkFinReceived()
 	case Enums.PACKET_STREAM_RST:
-		arqObj.MarkRstReceived(packet.SequenceNum)
-		arqObj.Abort("peer reset received", false)
+		arqObj.MarkRstReceived()
+		arqObj.Close("peer reset received", arq.CloseOptions{Force: true})
 		s.MarkTerminal(time.Now())
 		if s.StatusValue() != streamStatusCancelled {
 			s.SetStatus(streamStatusTimeWait)

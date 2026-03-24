@@ -473,7 +473,7 @@ func (c *Client) handlePendingSOCKSLocalClose(streamID uint16, reason string) {
 
 	arqObj, err := c.getStreamARQ(streamID)
 	if err == nil {
-		arqObj.MarkSocksFailed(Enums.PACKET_STREAM_RST)
+		arqObj.Close(reason, arq.CloseOptions{Force: true})
 	}
 }
 
@@ -602,8 +602,7 @@ func (c *Client) HandleSocksConnected(packet VpnProto.Packet) error {
 
 	if ok && s.StatusValue() == streamStatusCancelled {
 		if arqObj, err := c.getStreamARQ(packet.StreamID); err == nil {
-			arqObj.MarkSocksFailed(Enums.PACKET_STREAM_RST)
-			arqObj.Abort("late SOCKS success after local cancellation", false)
+			arqObj.Close("late SOCKS success after local cancellation", arq.CloseOptions{Force: true})
 		}
 		return nil
 	}
@@ -611,8 +610,7 @@ func (c *Client) HandleSocksConnected(packet VpnProto.Packet) error {
 	if err := c.writeSocksConnectResult(packet.StreamID, SOCKS5_REPLY_SUCCESS); err != nil {
 		if errors.Is(err, errLateSocksResult) {
 			if arqObj, arqErr := c.getStreamARQ(packet.StreamID); arqErr == nil {
-				arqObj.MarkSocksFailed(Enums.PACKET_STREAM_RST)
-				arqObj.Abort("late SOCKS success result", false)
+				arqObj.Close("late SOCKS success result", arq.CloseOptions{Force: true})
 			}
 			return nil
 		}
@@ -622,10 +620,7 @@ func (c *Client) HandleSocksConnected(packet VpnProto.Packet) error {
 
 	arqObj, err := c.getStreamARQ(packet.StreamID)
 	if err == nil {
-		arqObj.MarkSocksConnected()
-		for _, chunk := range s.takePendingLocalData() {
-			arqObj.InjectOutboundData(chunk)
-		}
+		arqObj.SetIOReady(true)
 	}
 
 	c.log.Debugf("🔌 <green>Socks successfully connected for stream %d</green>", packet.StreamID)
@@ -649,8 +644,7 @@ func (c *Client) HandleSocksFailure(packet VpnProto.Packet) error {
 	if ok && s.StatusValue() == streamStatusCancelled {
 		arqObj, err := c.getStreamARQ(packet.StreamID)
 		if err == nil {
-			arqObj.MarkSocksFailed(packet.PacketType)
-			arqObj.Abort("SOCKS failure received after local cancellation", false)
+			arqObj.Close("SOCKS failure received after local cancellation", arq.CloseOptions{Force: true})
 		}
 		return nil
 	}
@@ -658,8 +652,7 @@ func (c *Client) HandleSocksFailure(packet VpnProto.Packet) error {
 	if err := c.writeSocksConnectResult(packet.StreamID, socksReplyForPacketType(packet.PacketType)); err != nil {
 		if errors.Is(err, errLateSocksResult) {
 			if arqObj, arqErr := c.getStreamARQ(packet.StreamID); arqErr == nil {
-				arqObj.MarkSocksFailed(packet.PacketType)
-				arqObj.Abort("late SOCKS failure result", false)
+				arqObj.Close("late SOCKS failure result", arq.CloseOptions{Force: true})
 			}
 			return nil
 		}
@@ -672,8 +665,7 @@ func (c *Client) HandleSocksFailure(packet VpnProto.Packet) error {
 		return nil
 	}
 
-	arqObj.MarkSocksFailed(packet.PacketType)
-	arqObj.Abort("SOCKS failure received", false)
+	arqObj.Close("SOCKS failure received", arq.CloseOptions{Force: true})
 	return nil
 }
 

@@ -560,13 +560,6 @@ func (s *Server) consumeInboundStreamAck(vpnPacket VpnProto.Packet, stream *Stre
 			stream.mu.Unlock()
 		}
 	}
-
-	switch vpnPacket.PacketType {
-	case Enums.PACKET_SOCKS5_CONNECTED_ACK:
-		if handledAck {
-			stream.ARQ.MarkSocksConnected()
-		}
-	}
 }
 
 func (s *Server) queueImmediateControlAck(record *sessionRecord, packet VpnProto.Packet) bool {
@@ -851,8 +844,7 @@ func (s *Server) streamARQConfig(isSocks bool, compressionType uint8) arq.Config
 		WindowSize:               s.cfg.ARQWindowSize,
 		RTO:                      0.5,
 		MaxRTO:                   2.0,
-		IsSocks:                  isSocks,
-		IsClient:                 false,
+		StartPaused:              isSocks,
 		EnableControlReliability: true,
 		ControlRTO:               0.5,
 		ControlMaxRTO:            2.0,
@@ -861,8 +853,6 @@ func (s *Server) streamARQConfig(isSocks bool, compressionType uint8) arq.Config
 		DataPacketTTL:            600.0,
 		MaxDataRetries:           400,
 		ControlPacketTTL:         600.0,
-		FinDrainTimeout:          300.0,
-		GracefulDrainTimeout:     600.0,
 		TerminalDrainTimeout:     60.0,
 		TerminalAckWaitTimeout:   30.0,
 		CompressionType:          compressionType,
@@ -1537,7 +1527,6 @@ func (s *Server) processDeferredSOCKS5Syn(vpnPacket VpnProto.Packet, sessionReco
 		if errors.Is(err, SocksProto.ErrUnsupportedAddressType) || errors.Is(err, SocksProto.ErrInvalidDomainLength) {
 			packetType = uint8(Enums.PACKET_SOCKS5_ADDRESS_TYPE_UNSUPPORTED)
 		}
-		stream.ARQ.MarkSocksFailed(packetType)
 		_ = s.sendTrackedSOCKSResult(stream, packetType, vpnPacket.SequenceNum, 60*time.Second)
 		return
 	}
@@ -1557,7 +1546,6 @@ func (s *Server) processDeferredSOCKS5Syn(vpnPacket VpnProto.Packet, sessionReco
 			return
 		}
 
-		stream.ARQ.MarkSocksFailed(Enums.PACKET_SOCKS5_CONNECT_FAIL)
 		_ = s.sendTrackedSOCKSResult(stream, Enums.PACKET_SOCKS5_CONNECT_FAIL, vpnPacket.SequenceNum, 60*time.Second)
 		return
 	}
@@ -1576,7 +1564,6 @@ func (s *Server) processDeferredSOCKS5Syn(vpnPacket VpnProto.Packet, sessionReco
 				err,
 			)
 		}
-		stream.ARQ.MarkSocksFailed(packetType)
 		_ = s.sendTrackedSOCKSResult(stream, packetType, vpnPacket.SequenceNum, 60*time.Second)
 		return
 	}
@@ -1591,6 +1578,7 @@ func (s *Server) processDeferredSOCKS5Syn(vpnPacket VpnProto.Packet, sessionReco
 	// Legacy Attach (removed)
 
 	stream.ARQ.SetLocalConn(upstreamConn)
+	stream.ARQ.SetIOReady(true)
 
 	if s.log != nil {
 		s.log.Debugf(
@@ -1832,7 +1820,7 @@ func (s *Server) handleStreamFinRequest(vpnPacket VpnProto.Packet, sessionRecord
 	if !exists || stream == nil {
 		return s.enqueueMissingStreamReset(record, vpnPacket)
 	}
-	stream.ARQ.MarkFinReceived(vpnPacket.SequenceNum)
+	stream.ARQ.MarkFinReceived()
 	return true
 }
 
@@ -1849,11 +1837,11 @@ func (s *Server) handleStreamRSTRequest(vpnPacket VpnProto.Packet, sessionRecord
 	now := time.Now()
 	stream, ok := record.getStream(vpnPacket.StreamID)
 	if ok && stream != nil {
-		stream.ARQ.MarkRstReceived(vpnPacket.SequenceNum)
+		stream.ARQ.MarkRstReceived()
 		// A peer-originated reset is terminal immediately. Do not route it through the
 		// server's local-abort path, otherwise pending server data can incorrectly defer
 		// a fresh STREAM_RST even though the peer already cancelled the stream.
-		stream.ARQ.Abort("peer reset before/while connect", false)
+		stream.ARQ.Close("peer reset before/while connect", arq.CloseOptions{Force: true})
 		stream.mu.Lock()
 		stream.Status = "CLOSED"
 		stream.CloseTime = now

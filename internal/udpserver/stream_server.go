@@ -103,7 +103,7 @@ func (s *Stream_server) Close(reason string) {
 }
 
 func (s *Stream_server) Abort(reason string) {
-	s.CloseStream(false, 0, reason)
+	s.CloseStream(true, 0, reason)
 }
 
 func (s *Stream_server) cleanupResources() {
@@ -129,7 +129,11 @@ func (s *Stream_server) CloseStream(force bool, ttl time.Duration, reason string
 	}
 
 	if s.ARQ != nil {
-		s.ARQ.CloseStream(force, ttl)
+		s.ARQ.Close(reason, arq.CloseOptions{
+			Force:   force,
+			SendRST: !force,
+			TTL:     ttl,
+		})
 		if force {
 			s.cleanupResources()
 		}

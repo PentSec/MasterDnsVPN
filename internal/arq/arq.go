@@ -764,6 +764,11 @@ func (a *ARQ) emitTerminalPacketWithTTL(packetType uint8, reason string, ttl tim
 			a.mu.Unlock()
 			return
 		}
+		if a.finSeqSent == nil {
+			seq := uint16(0)
+			a.finSeqSent = &seq
+		}
+		finSeq := *a.finSeqSent
 		a.waitingAck = true
 		a.waitingAckFor = packetType
 		a.ackWaitDeadline = time.Now().Add(a.terminalAckWait)
@@ -771,12 +776,17 @@ func (a *ARQ) emitTerminalPacketWithTTL(packetType uint8, reason string, ttl tim
 
 		a.MarkFinSent()
 		ackType := uint8(Enums.PACKET_STREAM_FIN_ACK)
-		a.SendControlPacketWithTTL(Enums.PACKET_STREAM_FIN, *a.finSeqSent, 0, 0, nil, Enums.DefaultPacketPriority(Enums.PACKET_STREAM_FIN), a.enableControlReliability, &ackType, ttl)
+		a.SendControlPacketWithTTL(Enums.PACKET_STREAM_FIN, finSeq, 0, 0, nil, Enums.DefaultPacketPriority(Enums.PACKET_STREAM_FIN), a.enableControlReliability, &ackType, ttl)
 	case Enums.PACKET_STREAM_RST:
 		if a.rstReceived || a.rstSent {
 			a.mu.Unlock()
 			return
 		}
+		if a.rstSeqSent == nil {
+			seq := uint16(0)
+			a.rstSeqSent = &seq
+		}
+		rstSeq := *a.rstSeqSent
 		a.clearAllQueues(true)
 		a.waitingAck = true
 		a.waitingAckFor = packetType
@@ -786,7 +796,7 @@ func (a *ARQ) emitTerminalPacketWithTTL(packetType uint8, reason string, ttl tim
 		a.logger.Debugf("⚠️ <yellow>ARQ RST Trigger</yellow> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Source</blue>: <cyan>emitTerminalPacket</cyan> <magenta>|</magenta> <blue>Reason</blue>: <cyan>%s</cyan> <magenta>|</magenta> <blue>TTL</blue>: <cyan>%s</cyan>", a.sessionID, a.streamID, reason, ttl)
 		a.MarkRstSent()
 		ackType := uint8(Enums.PACKET_STREAM_RST_ACK)
-		a.SendControlPacketWithTTL(Enums.PACKET_STREAM_RST, *a.rstSeqSent, 0, 0, nil, Enums.DefaultPacketPriority(Enums.PACKET_STREAM_RST), a.enableControlReliability, &ackType, ttl)
+		a.SendControlPacketWithTTL(Enums.PACKET_STREAM_RST, rstSeq, 0, 0, nil, Enums.DefaultPacketPriority(Enums.PACKET_STREAM_RST), a.enableControlReliability, &ackType, ttl)
 	default:
 		a.mu.Unlock()
 	}
