@@ -12,6 +12,7 @@ package arq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -113,11 +114,10 @@ type ARQ struct {
 	finSeqSent     *uint16
 	finSeqReceived *uint16
 
-	rstReceived    bool
-	rstSent        bool
-	rstAcked       bool
-	rstSeqSent     *uint16
-	rstSeqReceived *uint16
+	rstReceived bool
+	rstSent     bool
+	rstAcked    bool
+	rstSeqSent  *uint16
 
 	localWriteClosed  bool
 	remoteWriteClosed bool
@@ -404,12 +404,10 @@ func (a *ARQ) setState(newState StreamState) {
 func (a *ARQ) clearAllQueues(clearControl bool) {
 	a.sndBuf = make(map[uint16]*arqDataItem)
 	a.rcvBuf = make(map[uint16][]byte)
-	// Maybe clear other Controls and just keep RST! idk
 	if clearControl {
 		a.controlSndBuf = make(map[uint32]*arqControlItem)
 	}
 
-	// Maybe need too check ControlBuffer is empty or not
 	a.signalWindowNotFull()
 }
 
@@ -642,272 +640,274 @@ func (a *ARQ) isClosed() bool {
 }
 
 // initiateGracefulClose delays closure until SND buffers map drain, emitting Graceful Fin
-// func (a *ARQ) initiateGracefulClose(reason string) {
-// 	a.mu.Lock()
-// 	if a.closed {
-// 		a.mu.Unlock()
-// 		return
-// 	}
+func (a *ARQ) initiateGracefulClose(reason string) {
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return
+	}
 
-// 	a.closeReason = reason
-// 	if a.state != StateReset && a.state != StateClosed {
-// 		a.setState(StateDraining)
-// 	}
+	a.closeReason = reason
+	if a.state != StateReset && a.state != StateClosed {
+		a.setState(StateDraining)
+	}
 
-// 	a.mu.Unlock()
+	a.mu.Unlock()
 
-// 	a.deferTerminalPacket(reason, Enums.PACKET_STREAM_FIN)
-// }
+	a.deferTerminalPacket(reason, Enums.PACKET_STREAM_FIN)
+}
 
-// func (a *ARQ) deferGracefulClose(reason string) {
-// 	a.mu.Lock()
-// 	if a.closed || a.isVirtual {
-// 		a.mu.Unlock()
-// 		return
-// 	}
+func (a *ARQ) deferGracefulClose(reason string) {
+	a.mu.Lock()
+	if a.closed || a.isVirtual {
+		a.mu.Unlock()
+		return
+	}
 
-// 	if a.state != StateReset && a.state != StateClosed {
-// 		a.setState(StateDraining)
-// 	}
-// 	a.stopLocalRead = true
-// 	a.deferredClose = true
-// 	a.deferredReason = reason
+	if a.state != StateReset && a.state != StateClosed {
+		a.setState(StateDraining)
+	}
+	a.stopLocalRead = true
+	a.deferredClose = true
+	a.deferredReason = reason
 
-// 	deadline := time.Now().Add(maxDuration(a.dataPacketTTL, a.gracefulDrainTimeout))
-// 	if a.deferredDeadline.IsZero() || deadline.After(a.deferredDeadline) {
-// 		a.deferredDeadline = deadline
-// 	}
-// 	a.mu.Unlock()
-// }
+	deadline := time.Now().Add(maxDuration(a.dataPacketTTL, a.gracefulDrainTimeout))
+	if a.deferredDeadline.IsZero() || deadline.After(a.deferredDeadline) {
+		a.deferredDeadline = deadline
+	}
+	a.mu.Unlock()
+}
 
-// func (a *ARQ) settleDeferredClose() {
-// 	var (
-// 		shouldClose bool
-// 		shouldAbort bool
-// 		reason      string
-// 	)
+func (a *ARQ) settleDeferredClose() {
+	var (
+		shouldClose bool
+		shouldAbort bool
+		reason      string
+	)
 
-// 	a.mu.Lock()
-// 	if a.closed || !a.deferredClose {
-// 		a.mu.Unlock()
-// 		return
-// 	}
+	a.mu.Lock()
+	if a.closed || !a.deferredClose {
+		a.mu.Unlock()
+		return
+	}
 
-// 	switch {
-// 	case len(a.sndBuf) == 0:
-// 		shouldClose = true
-// 		reason = a.deferredReason
-// 		a.deferredClose = false
-// 		a.deferredReason = ""
-// 		a.deferredDeadline = time.Time{}
-// 	case !a.deferredDeadline.IsZero() && time.Now().After(a.deferredDeadline):
-// 		shouldAbort = true
-// 		reason = a.deferredReason + " but emergency drain timeout expired"
-// 		a.deferredClose = false
-// 		a.deferredReason = ""
-// 		a.deferredDeadline = time.Time{}
-// 	}
-// 	a.mu.Unlock()
+	switch {
+	case len(a.sndBuf) == 0:
+		shouldClose = true
+		reason = a.deferredReason
+		a.deferredClose = false
+		a.deferredReason = ""
+		a.deferredDeadline = time.Time{}
+	case !a.deferredDeadline.IsZero() && time.Now().After(a.deferredDeadline):
+		shouldAbort = true
+		reason = a.deferredReason + " but emergency drain timeout expired"
+		a.deferredClose = false
+		a.deferredReason = ""
+		a.deferredDeadline = time.Time{}
+	}
+	a.mu.Unlock()
 
-// 	if shouldClose {
-// 		a.Close(reason, true)
-// 		return
-// 	}
-// 	if shouldAbort {
-// 		a.Abort(reason, true)
-// 	}
-// }
+	if shouldClose {
+		a.Close(reason, true)
+		return
+	}
+	if shouldAbort {
+		a.Abort(reason, true)
+	}
+}
 
-// func (a *ARQ) deferTerminalPacket(reason string, packetType uint8) {
-// 	a.mu.Lock()
-// 	if a.closed || a.isVirtual {
-// 		a.mu.Unlock()
-// 		return
-// 	}
+func (a *ARQ) deferTerminalPacket(reason string, packetType uint8) {
+	a.mu.Lock()
+	if a.closed || a.isVirtual {
+		a.mu.Unlock()
+		return
+	}
 
-// 	if a.state != StateReset && a.state != StateClosed {
-// 		a.setState(StateDraining)
-// 	}
-// 	a.stopLocalRead = true
-// 	a.deferredClose = true
-// 	a.deferredReason = reason
-// 	a.deferredPacket = packetType
+	if a.state != StateReset && a.state != StateClosed {
+		a.setState(StateDraining)
+	}
 
-// 	deadline := time.Now().Add(a.terminalDrainTimeout)
-// 	if a.deferredDeadline.IsZero() || deadline.After(a.deferredDeadline) {
-// 		a.deferredDeadline = deadline
-// 	}
-// 	sndBufLen := len(a.sndBuf)
-// 	a.mu.Unlock()
+	a.stopLocalRead = true
+	a.deferredClose = true
+	a.deferredReason = reason
+	a.deferredPacket = packetType
 
-// 	if sndBufLen == 0 {
-// 		a.settleTerminalDrain()
-// 	}
-// }
+	deadline := time.Now().Add(a.terminalDrainTimeout)
+	if a.deferredDeadline.IsZero() || deadline.After(a.deferredDeadline) {
+		a.deferredDeadline = deadline
+	}
+	sndBufLen := len(a.sndBuf)
+	a.mu.Unlock()
 
-// func (a *ARQ) settleTerminalDrain() {
-// 	var (
-// 		packetType uint8
-// 		shouldEmit bool
-// 		reason     string
-// 	)
+	if sndBufLen == 0 {
+		a.settleTerminalDrain()
+	}
+}
 
-// 	a.mu.Lock()
-// 	if a.closed || !a.deferredClose {
-// 		a.mu.Unlock()
-// 		return
-// 	}
+func (a *ARQ) settleTerminalDrain() {
+	var (
+		packetType uint8
+		shouldEmit bool
+		reason     string
+	)
 
-// 	switch {
-// 	case len(a.sndBuf) == 0:
-// 		shouldEmit = true
-// 		packetType = a.deferredPacket
-// 		reason = a.deferredReason
-// 	case !a.deferredDeadline.IsZero() && time.Now().After(a.deferredDeadline):
-// 		shouldEmit = true
-// 		packetType = Enums.PACKET_STREAM_RST
-// 		reason = a.deferredReason + " but drain timeout expired"
-// 	default:
-// 		a.mu.Unlock()
-// 		return
-// 	}
+	a.mu.Lock()
+	if a.closed || !a.deferredClose {
+		a.mu.Unlock()
+		return
+	}
 
-// 	a.deferredClose = false
-// 	a.deferredReason = ""
-// 	a.deferredDeadline = time.Time{}
-// 	a.deferredPacket = 0
-// 	a.mu.Unlock()
-// 	if shouldEmit {
-// 		a.emitTerminalPacket(packetType, reason)
-// 	}
-// }
+	switch {
+	case len(a.sndBuf) == 0:
+		shouldEmit = true
+		packetType = a.deferredPacket
+		reason = a.deferredReason
+	case !a.deferredDeadline.IsZero() && time.Now().After(a.deferredDeadline):
+		shouldEmit = true
+		packetType = Enums.PACKET_STREAM_RST
+		reason = a.deferredReason + " but drain timeout expired"
+	default:
+		a.mu.Unlock()
+		return
+	}
 
-// func (a *ARQ) emitTerminalPacket(packetType uint8, reason string) {
-// 	a.emitTerminalPacketWithTTL(packetType, reason, 0)
-// }
+	a.deferredClose = false
+	a.deferredReason = ""
+	a.deferredDeadline = time.Time{}
+	a.deferredPacket = 0
+	a.mu.Unlock()
+	if shouldEmit {
+		a.emitTerminalPacketWithTTL(packetType, reason, 0)
+	}
+}
 
-// func (a *ARQ) emitTerminalPacketWithTTL(packetType uint8, reason string, ttl time.Duration) {
-// 	a.mu.Lock()
-// 	if a.closed || a.isVirtual {
-// 		a.mu.Unlock()
-// 		return
-// 	}
+func (a *ARQ) emitTerminalPacketWithTTL(packetType uint8, reason string, ttl time.Duration) {
+	a.mu.Lock()
+	if a.closed || a.isVirtual {
+		a.mu.Unlock()
+		return
+	}
 
-// 	a.closeReason = reason
-// 	a.stopLocalRead = true
-// 	a.deferredClose = false
-// 	a.deferredReason = ""
-// 	a.deferredDeadline = time.Time{}
-// 	a.deferredPacket = 0
+	a.closeReason = reason
+	a.stopLocalRead = true
+	a.deferredClose = false
+	a.deferredReason = ""
+	a.deferredDeadline = time.Time{}
+	a.deferredPacket = 0
 
-// 	if a.waitingAck && a.waitingAckFor == packetType {
-// 		a.mu.Unlock()
-// 		return
-// 	}
+	if a.waitingAck && a.waitingAckFor == packetType {
+		a.mu.Unlock()
+		return
+	}
 
-// 	switch packetType {
-// 	case Enums.PACKET_STREAM_FIN:
-// 		if a.rstSent || a.rstReceived || a.finSent {
-// 			a.mu.Unlock()
-// 			return
-// 		}
-// 		a.waitingAck = true
-// 		a.waitingAckFor = packetType
-// 		a.ackWaitDeadline = time.Now().Add(a.terminalAckWait)
-// 		a.mu.Unlock()
+	switch packetType {
+	case Enums.PACKET_STREAM_FIN:
+		if a.rstSent || a.rstReceived || a.finSent {
+			a.mu.Unlock()
+			return
+		}
+		a.waitingAck = true
+		a.waitingAckFor = packetType
+		a.ackWaitDeadline = time.Now().Add(a.terminalAckWait)
+		a.mu.Unlock()
 
-// 		a.MarkFinSent()
-// 		ackType := uint8(Enums.PACKET_STREAM_FIN_ACK)
-// 		a.SendControlPacketWithTTL(Enums.PACKET_STREAM_FIN, *a.finSeqSent, 0, 0, nil, Enums.DefaultPacketPriority(Enums.PACKET_STREAM_FIN), a.enableControlReliability, &ackType, ttl)
-// 	case Enums.PACKET_STREAM_RST:
-// 		if a.rstReceived || a.rstSent {
-// 			a.mu.Unlock()
-// 			return
-// 		}
-// 		a.clearAllQueues()
-// 		a.waitingAck = true
-// 		a.waitingAckFor = packetType
-// 		a.ackWaitDeadline = time.Now().Add(a.terminalAckWait)
-// 		a.mu.Unlock()
+		a.MarkFinSent()
+		ackType := uint8(Enums.PACKET_STREAM_FIN_ACK)
+		a.SendControlPacketWithTTL(Enums.PACKET_STREAM_FIN, *a.finSeqSent, 0, 0, nil, Enums.DefaultPacketPriority(Enums.PACKET_STREAM_FIN), a.enableControlReliability, &ackType, ttl)
+	case Enums.PACKET_STREAM_RST:
+		if a.rstReceived || a.rstSent {
+			a.mu.Unlock()
+			return
+		}
+		a.clearAllQueues(true)
+		a.waitingAck = true
+		a.waitingAckFor = packetType
+		a.ackWaitDeadline = time.Now().Add(a.terminalAckWait)
+		a.mu.Unlock()
 
-// 		a.logger.Debugf("⚠️ <yellow>ARQ RST Trigger</yellow> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Source</blue>: <cyan>emitTerminalPacket</cyan> <magenta>|</magenta> <blue>Reason</blue>: <cyan>%s</cyan> <magenta>|</magenta> <blue>TTL</blue>: <cyan>%s</cyan>", a.sessionID, a.streamID, reason, ttl)
-// 		a.MarkRstSent()
-// 		ackType := uint8(Enums.PACKET_STREAM_RST_ACK)
-// 		a.SendControlPacketWithTTL(Enums.PACKET_STREAM_RST, *a.rstSeqSent, 0, 0, nil, Enums.DefaultPacketPriority(Enums.PACKET_STREAM_RST), a.enableControlReliability, &ackType, ttl)
-// 	default:
-// 		a.mu.Unlock()
-// 	}
-// }
+		a.logger.Debugf("⚠️ <yellow>ARQ RST Trigger</yellow> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Source</blue>: <cyan>emitTerminalPacket</cyan> <magenta>|</magenta> <blue>Reason</blue>: <cyan>%s</cyan> <magenta>|</magenta> <blue>TTL</blue>: <cyan>%s</cyan>", a.sessionID, a.streamID, reason, ttl)
+		a.MarkRstSent()
+		ackType := uint8(Enums.PACKET_STREAM_RST_ACK)
+		a.SendControlPacketWithTTL(Enums.PACKET_STREAM_RST, *a.rstSeqSent, 0, 0, nil, Enums.DefaultPacketPriority(Enums.PACKET_STREAM_RST), a.enableControlReliability, &ackType, ttl)
+	default:
+		a.mu.Unlock()
+	}
+}
 
-// func (a *ARQ) finalizeClose(reason string) {
-// 	a.mu.Lock()
-// 	if a.closed || a.isVirtual {
-// 		a.mu.Unlock()
-// 		return
-// 	}
-// 	sndBufLen := len(a.sndBuf)
-// 	rcvBufLen := len(a.rcvBuf)
-// 	prevState := a.state
-// 	finSent := a.finSent
-// 	finReceived := a.finReceived
-// 	finAcked := a.finAcked
-// 	rstSent := a.rstSent
-// 	rstReceived := a.rstReceived
-// 	rstAcked := a.rstAcked
-// 	a.closeReason = reason
-// 	a.closed = true
-// 	a.deferredClose = false
-// 	a.deferredReason = ""
-// 	a.deferredDeadline = time.Time{}
-// 	a.deferredPacket = 0
-// 	a.waitingAck = false
-// 	a.waitingAckFor = 0
-// 	a.ackWaitDeadline = time.Time{}
+func (a *ARQ) finalizeClose(reason string) {
+	a.mu.Lock()
+	if a.closed || a.isVirtual {
+		a.mu.Unlock()
+		return
+	}
 
-// 	if a.state == StateReset || a.rstReceived || a.rstSent {
-// 		a.setState(StateReset)
-// 	} else if a.finSent || a.finReceived {
-// 		a.setState(StateTimeWait)
-// 	} else {
-// 		a.setState(StateClosing)
-// 	}
+	sndBufLen := len(a.sndBuf)
+	rcvBufLen := len(a.rcvBuf)
+	prevState := a.state
+	finSent := a.finSent
+	finReceived := a.finReceived
+	finAcked := a.finAcked
+	rstSent := a.rstSent
+	rstReceived := a.rstReceived
+	rstAcked := a.rstAcked
+	a.closeReason = reason
+	a.closed = true
+	a.deferredClose = false
+	a.deferredReason = ""
+	a.deferredDeadline = time.Time{}
+	a.deferredPacket = 0
+	a.waitingAck = false
+	a.waitingAckFor = 0
+	a.ackWaitDeadline = time.Time{}
 
-// 	a.cancel()
+	if a.state == StateReset || a.rstReceived || a.rstSent {
+		a.setState(StateReset)
+	} else if a.finSent || a.finReceived {
+		a.setState(StateTimeWait)
+	} else {
+		a.setState(StateClosing)
+	}
 
-// 	if a.localConn != nil {
-// 		_ = a.localConn.Close()
-// 	}
+	a.cancel()
 
-// 	a.clearAllQueues(true)
-// 	a.mu.Unlock()
+	if a.localConn != nil {
+		_ = a.localConn.Close()
+	}
 
-// 	a.logger.Debugf(
-// 		"🧹 <green>ARQ Stream Closed</green> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Reason</blue>: <yellow>%s</yellow> <magenta>|</magenta> <blue>PrevState</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>SndBuf</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>RcvBuf</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>FIN</blue>: <cyan>%t/%t/%t</cyan> <magenta>|</magenta> <blue>RST</blue>: <cyan>%t/%t/%t</cyan>",
-// 		a.sessionID,
-// 		a.streamID,
-// 		reason,
-// 		prevState,
-// 		sndBufLen,
-// 		rcvBufLen,
-// 		finSent,
-// 		finReceived,
-// 		finAcked,
-// 		rstSent,
-// 		rstReceived,
-// 		rstAcked,
-// 	)
-// }
+	a.clearAllQueues(true)
+	a.mu.Unlock()
+
+	a.logger.Debugf(
+		"🧹 <green>ARQ Stream Closed</green> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Reason</blue>: <yellow>%s</yellow> <magenta>|</magenta> <blue>PrevState</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>SndBuf</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>RcvBuf</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>FIN</blue>: <cyan>%t/%t/%t</cyan> <magenta>|</magenta> <blue>RST</blue>: <cyan>%t/%t/%t</cyan>",
+		a.sessionID,
+		a.streamID,
+		reason,
+		prevState,
+		sndBufLen,
+		rcvBufLen,
+		finSent,
+		finReceived,
+		finAcked,
+		rstSent,
+		rstReceived,
+		rstAcked,
+	)
+}
 
 func (a *ARQ) retransmitLoop() {
 	defer a.wg.Done()
+
 	for {
 		a.mu.Lock()
 		rtoFactor := a.rto
-		if a.enableControlReliability && a.controlRto < a.rto {
+		if a.enableControlReliability && a.controlRto < rtoFactor {
 			rtoFactor = a.controlRto
 		}
 
 		baseInterval := rtoFactor / 3
+		if baseInterval < 50*time.Millisecond {
+			baseInterval = 50 * time.Millisecond
+		}
 
 		hasPending := len(a.sndBuf) > 0 || (a.enableControlReliability && len(a.controlSndBuf) > 0)
 		a.mu.Unlock()
@@ -918,16 +918,29 @@ func (a *ARQ) retransmitLoop() {
 			if interval < 200*time.Millisecond {
 				interval = 200 * time.Millisecond
 			}
-		} else if interval < 50*time.Millisecond {
-			interval = 50 * time.Millisecond
 		}
 
+		timer := time.NewTimer(interval)
 		select {
 		case <-a.ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			return
-		case <-time.After(interval):
-			a.checkRetransmits()
+		case <-timer.C:
 		}
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					a.logger.Debugf("Retransmit check panic on stream %d: %v", a.streamID, r)
+				}
+			}()
+			a.checkRetransmits()
+		}()
 	}
 }
 
@@ -1047,237 +1060,191 @@ func (a *ARQ) signalFlushReady() {
 	}
 }
 
-// // ReceiveAck resolves inbound STREAM_DATA_ACK and frees SEND_WINDOW backpressure buffer slots.
-// // It returns true only when this ARQ instance was actually tracking the data packet.
-// func (a *ARQ) ReceiveAck(sn uint16) bool {
-// 	a.mu.Lock()
-// 	a.lastActivity = time.Now()
-// 	handled := false
+// ReceiveAck resolves inbound STREAM_DATA_ACK and frees SEND_WINDOW backpressure buffer slots.
+// It returns true only when this ARQ instance was actually tracking the data packet.
+func (a *ARQ) ReceiveAck(packetType uint8, sn uint16) bool {
+	a.mu.Lock()
+	a.lastActivity = time.Now()
+	handled := false
 
-// 	if _, exists := a.sndBuf[sn]; exists {
-// 		delete(a.sndBuf, sn)
-// 		if len(a.sndBuf) < a.limit {
-// 			a.signalWindowNotFull()
-// 		}
-// 		handled = true
-// 	}
-// 	a.mu.Unlock()
+	if packetType == Enums.PACKET_STREAM_FIN_ACK || packetType == Enums.PACKET_STREAM_RST_ACK {
 
-// 	if handled {
-// 		if a.finReceivedLocked() {
-// 			a.tryFinalizeRemoteEOF()
-// 		}
-// 		a.settleTerminalDrain()
-// 	}
-// 	return handled
-// }
+	}
+	if _, exists := a.sndBuf[sn]; exists {
+		delete(a.sndBuf, sn)
+		if len(a.sndBuf) < a.limit {
+			a.signalWindowNotFull()
+		}
+		handled = true
+	}
+	a.mu.Unlock()
+
+	if handled {
+		if a.finReceivedLocked() {
+			a.tryFinalizeRemoteEOF()
+		}
+		a.settleTerminalDrain()
+	}
+	return handled
+}
 
 // ---------------------------------------------------------------------
 // Control Plane Verification
 // ---------------------------------------------------------------------
 
-// func (a *ARQ) SendControlPacket(packetType uint8, sequenceNum uint16, fragmentID uint8, totalFragments uint8, payload []byte, priority int, trackForAck bool, customAckType *uint8) bool {
-// 	return a.SendControlPacketWithTTL(packetType, sequenceNum, fragmentID, totalFragments, payload, priority, trackForAck, customAckType, 0)
-// }
+func (a *ARQ) SendControlPacket(packetType uint8, sequenceNum uint16, fragmentID uint8, totalFragments uint8, payload []byte, priority int, trackForAck bool, customAckType *uint8) bool {
+	return a.SendControlPacketWithTTL(packetType, sequenceNum, fragmentID, totalFragments, payload, priority, trackForAck, customAckType, 0)
+}
 
-// func (a *ARQ) SendControlPacketWithTTL(packetType uint8, sequenceNum uint16, fragmentID uint8, totalFragments uint8, payload []byte, priority int, trackForAck bool, customAckType *uint8, ttl time.Duration) bool {
-// 	copyData := append([]byte(nil), payload...)
-// 	priority = Enums.NormalizePacketPriority(packetType, priority)
-// 	ok := a.enqueuer.PushTXPacket(priority, packetType, sequenceNum, fragmentID, totalFragments, 0, ttl, copyData)
-// 	if !ok {
-// 		return false
-// 	}
+func (a *ARQ) SendControlPacketWithTTL(packetType uint8, sequenceNum uint16, fragmentID uint8, totalFragments uint8, payload []byte, priority int, trackForAck bool, customAckType *uint8, ttl time.Duration) bool {
+	copyData := append([]byte(nil), payload...)
+	priority = Enums.NormalizePacketPriority(packetType, priority)
+	ok := a.enqueuer.PushTXPacket(priority, packetType, sequenceNum, fragmentID, totalFragments, 0, ttl, copyData)
+	if !ok {
+		return false
+	}
 
-// 	if !a.enableControlReliability || !trackForAck {
-// 		return true
-// 	}
+	if !a.enableControlReliability || !trackForAck {
+		return true
+	}
 
-// 	var expectedAck uint8
-// 	if customAckType != nil {
-// 		expectedAck = *customAckType
-// 	} else {
-// 		val, ok := Enums.ControlAckFor(packetType)
-// 		if !ok {
-// 			return true
-// 		}
-// 		expectedAck = val
-// 	}
+	var expectedAck uint8
+	if customAckType != nil {
+		expectedAck = *customAckType
+	} else {
+		val, ok := Enums.ControlAckFor(packetType)
+		if !ok {
+			return true
+		}
+		expectedAck = val
+	}
 
-// 	// Key: [8bit PacketType][16bit SequenceNum][8bit FragmentID]
-// 	key := uint32(packetType)<<24 | uint32(sequenceNum)<<8 | uint32(fragmentID)
-// 	now := time.Now()
+	// Key: [8bit PacketType][16bit SequenceNum][8bit FragmentID]
+	key := uint32(packetType)<<24 | uint32(sequenceNum)<<8 | uint32(fragmentID)
+	now := time.Now()
 
-// 	a.mu.Lock()
-// 	defer a.mu.Unlock()
-// 	if _, exists := a.controlSndBuf[key]; exists {
-// 		return true
-// 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, exists := a.controlSndBuf[key]; exists {
+		return true
+	}
 
-// 	initialRTO := a.controlRto
-// 	if setupControlPacketTypes[packetType] {
-// 		altRto := 350 * time.Millisecond
-// 		if altRto < initialRTO {
-// 			initialRTO = altRto
-// 		}
-// 	}
+	initialRTO := a.controlRto
+	if setupControlPacketTypes[packetType] {
+		altRto := 350 * time.Millisecond
+		if altRto < initialRTO {
+			initialRTO = altRto
+		}
+	}
 
-// 	a.controlSndBuf[key] = &arqControlItem{
-// 		PacketType:     packetType,
-// 		SequenceNum:    sequenceNum,
-// 		FragmentID:     fragmentID,
-// 		TotalFragments: totalFragments,
-// 		AckType:        expectedAck,
-// 		Payload:        copyData,
-// 		Priority:       priority,
-// 		CreatedAt:      now,
-// 		LastSentAt:     now,
-// 		Retries:        0,
-// 		CurrentRTO:     initialRTO,
-// 		TTL:            ttl,
-// 	}
+	a.controlSndBuf[key] = &arqControlItem{
+		PacketType:     packetType,
+		SequenceNum:    sequenceNum,
+		FragmentID:     fragmentID,
+		TotalFragments: totalFragments,
+		AckType:        expectedAck,
+		Payload:        copyData,
+		Priority:       priority,
+		CreatedAt:      now,
+		LastSentAt:     now,
+		Retries:        0,
+		CurrentRTO:     initialRTO,
+		TTL:            ttl,
+	}
 
-// 	return true
-// }
+	return true
+}
 
-// func (a *ARQ) handleTrackedPacketTTLExpiry(packetType uint8, reason string) {
-// 	if isTerminalAckOwnedPacket(packetType) {
-// 		a.finalizeClose(reason)
-// 		return
-// 	}
+func (a *ARQ) handleTrackedPacketTTLExpiry(packetType uint8, reason string) {
+	if _, ok := Enums.GetPacketCloseStream(packetType); ok && packetType != Enums.PACKET_STREAM_FIN {
+		a.finalizeClose(reason)
+		return
+	}
 
-// 	a.emitTerminalPacket(Enums.PACKET_STREAM_RST, reason)
-// }
+	a.clearAllQueues(true)
+	a.Abort(reason, true)
+}
 
-// func isTerminalAckOwnedPacket(packetType uint8) bool {
-// 	switch packetType {
-// 	case Enums.PACKET_STREAM_RST,
-// 		Enums.PACKET_SOCKS5_CONNECT_FAIL,
-// 		Enums.PACKET_SOCKS5_RULESET_DENIED,
-// 		Enums.PACKET_SOCKS5_NETWORK_UNREACHABLE,
-// 		Enums.PACKET_SOCKS5_HOST_UNREACHABLE,
-// 		Enums.PACKET_SOCKS5_CONNECTION_REFUSED,
-// 		Enums.PACKET_SOCKS5_TTL_EXPIRED,
-// 		Enums.PACKET_SOCKS5_COMMAND_UNSUPPORTED,
-// 		Enums.PACKET_SOCKS5_ADDRESS_TYPE_UNSUPPORTED,
-// 		Enums.PACKET_SOCKS5_AUTH_FAILED,
-// 		Enums.PACKET_SOCKS5_UPSTREAM_UNAVAILABLE:
-// 		return true
-// 	default:
-// 		return false
-// 	}
-// }
+func (a *ARQ) ReceiveControlAck(ackPacketType uint8, sequenceNum uint16, fragmentID uint8) bool {
+	a.mu.Lock()
+	a.lastActivity = time.Now()
+	originPtype, ok := Enums.ReverseControlAckFor(ackPacketType)
+	if !ok {
+		a.mu.Unlock()
+		return false
+	}
 
-// func (a *ARQ) ReceiveControlAck(ackPacketType uint8, sequenceNum uint16, fragmentID uint8) bool {
-// 	a.mu.Lock()
-// 	a.lastActivity = time.Now()
-// 	originPtype, ok := Enums.ReverseControlAckFor(ackPacketType)
-// 	if !ok {
-// 		a.mu.Unlock()
-// 		return false
-// 	}
+	key := uint32(originPtype)<<24 | uint32(sequenceNum)<<8 | uint32(fragmentID)
+	_, tracked := a.controlSndBuf[key]
 
-// 	key := uint32(originPtype)<<24 | uint32(sequenceNum)<<8 | uint32(fragmentID)
-// 	_, tracked := a.controlSndBuf[key]
+	waitingFor := a.waitingAckFor
+	isWaitingFin := ackPacketType == Enums.PACKET_STREAM_FIN_ACK && waitingFor == Enums.PACKET_STREAM_FIN
+	isWaitingRst := ackPacketType == Enums.PACKET_STREAM_RST_ACK && waitingFor == Enums.PACKET_STREAM_RST
 
-// 	waitingFor := a.waitingAckFor
-// 	isWaitingFin := ackPacketType == Enums.PACKET_STREAM_FIN_ACK && waitingFor == Enums.PACKET_STREAM_FIN
-// 	isWaitingRst := ackPacketType == Enums.PACKET_STREAM_RST_ACK && waitingFor == Enums.PACKET_STREAM_RST
+	if !tracked && !isWaitingFin && !isWaitingRst {
+		a.mu.Unlock()
+		return false
+	}
 
-// 	if !tracked && !isWaitingFin && !isWaitingRst {
-// 		a.mu.Unlock()
-// 		return false
-// 	}
+	if tracked {
+		delete(a.controlSndBuf, key)
+	}
+	a.mu.Unlock()
 
-// 	if tracked {
-// 		delete(a.controlSndBuf, key)
-// 	}
-// 	a.mu.Unlock()
+	if tracked && isTerminalAckOwnedPacket(originPtype) {
+		a.finalizeClose(fmt.Sprintf("%s acknowledged", Enums.PacketTypeName(originPtype)))
+		return true
+	}
 
-// 	if tracked && isTerminalAckOwnedPacket(originPtype) {
-// 		a.finalizeClose(fmt.Sprintf("%s acknowledged", Enums.PacketTypeName(originPtype)))
-// 		return true
-// 	}
+	if ackPacketType == Enums.PACKET_STREAM_FIN_ACK && isWaitingFin {
+		a.markFinAcked(sequenceNum)
+		a.clearWaitingAck(Enums.PACKET_STREAM_FIN)
+		a.tryFinalizeRemoteEOF()
+		return true
+	}
 
-// 	if ackPacketType == Enums.PACKET_STREAM_FIN_ACK && isWaitingFin {
-// 		a.markFinAcked(sequenceNum)
-// 		a.clearWaitingAck(Enums.PACKET_STREAM_FIN)
-// 		a.tryFinalizeRemoteEOF()
-// 		return true
-// 	}
+	if ackPacketType == Enums.PACKET_STREAM_RST_ACK && isWaitingRst {
+		a.markRstAcked(sequenceNum)
+		a.finalizeClose("RST acknowledged")
+		return true
+	}
 
-// 	if ackPacketType == Enums.PACKET_STREAM_RST_ACK && isWaitingRst {
-// 		a.markRstAcked(sequenceNum)
-// 		a.finalizeClose("RST acknowledged")
-// 		return true
-// 	}
-
-// 	return tracked
-// }
+	return tracked
+}
 
 // // HandleAckPacket is the unified ACK entrypoint for this ARQ stream.
 // // It consumes DATA_ACK locally, consumes tracked control ACKs, and silently
 // // ignores ACKs that were not sent by this ARQ instance.
-// func (a *ARQ) HandleAckPacket(packetType uint8, sequenceNum uint16, fragmentID uint8) bool {
-// 	if packetType == Enums.PACKET_STREAM_DATA_ACK {
-// 		return a.ReceiveAck(sequenceNum)
-// 	}
+func (a *ARQ) HandleAckPacket(packetType uint8, sequenceNum uint16, fragmentID uint8) bool {
+	if packetType == Enums.PACKET_STREAM_DATA_ACK {
+		return a.ReceiveAck(packetType, sequenceNum)
+	}
 
-// 	if _, ok := Enums.ReverseControlAckFor(packetType); !ok {
-// 		return false
-// 	}
+	if _, ok := Enums.ReverseControlAckFor(packetType); !ok {
+		return false
+	}
 
-// 	return a.ReceiveControlAck(packetType, sequenceNum, fragmentID)
-// }
+	return a.ReceiveControlAck(packetType, sequenceNum, fragmentID)
+}
+
+type rtxJob struct {
+	sn              uint16
+	data            []byte
+	compressionType uint8
+}
 
 func (a *ARQ) checkRetransmits() {
 	if a.isClosed() {
 		return
 	}
 
-	a.mu.Lock()
 	now := time.Now()
-	if a.deferredClose {
-		shouldClose := len(a.sndBuf) == 0
-		shouldAbort := !a.deferredDeadline.IsZero() && now.After(a.deferredDeadline)
-		a.mu.Unlock()
-		if shouldClose || shouldAbort {
-			a.settleTerminalDrain()
-		}
-		if a.isClosed() {
-			return
-		}
-		a.mu.Lock()
-	}
-	if a.waitingAck && !a.ackWaitDeadline.IsZero() && now.After(a.ackWaitDeadline) {
-		a.mu.Unlock()
-		a.finalizeClose("Terminal ACK wait timeout")
+
+	if a.handleTerminalRetransmitState(now) {
 		return
-	}
-	if a.rstReceived && a.state != StateReset {
-		sn := uint16(0)
-		if a.rstSeqReceived != nil {
-			sn = *a.rstSeqReceived
-		}
-		a.mu.Unlock()
-		a.MarkRstReceived(sn)
-		a.Abort("Peer reset signaled", false)
-		return
-	}
-	if now.Sub(a.lastActivity) > a.inactivityTimeout {
-		if len(a.sndBuf) > 0 || (a.enableControlReliability && len(a.controlSndBuf) > 0) {
-			a.lastActivity = now
-		} else {
-			a.mu.Unlock()
-			a.Abort("Stream Inactivity Timeout (Dead)", true)
-			return
-		}
 	}
 
-	type rtxJob struct {
-		sn              uint16
-		data            []byte
-		compressionType uint8
-	}
+	a.mu.Lock()
 	var jobs []rtxJob
 
 	for sn, info := range a.sndBuf {
@@ -1293,19 +1260,30 @@ func (a *ARQ) checkRetransmits() {
 			return
 		}
 
-		if now.Sub(info.LastSentAt) >= info.CurrentRTO {
-			jobs = append(jobs, rtxJob{sn, info.Data, info.CompressionType})
-			info.LastSentAt = now
-			info.Retries++
-
-			grownRTO := time.Duration(float64(info.CurrentRTO) * 1.2)
-			info.CurrentRTO = time.Duration(minF(float64(a.maxRTO), maxF(float64(a.rto), float64(grownRTO))))
+		if now.Sub(info.LastSentAt) < info.CurrentRTO {
+			continue
 		}
+
+		jobs = append(jobs, rtxJob{
+			sn:              sn,
+			data:            info.Data,
+			compressionType: info.CompressionType,
+		})
+
+		info.LastSentAt = now
+		info.Retries++
+
+		grownRTO := time.Duration(float64(info.CurrentRTO) * 1.2)
+		info.CurrentRTO = time.Duration(minF(float64(a.maxRTO), maxF(float64(a.rto), float64(grownRTO))))
 	}
 	a.mu.Unlock()
 
 	for _, j := range jobs {
-		a.enqueuer.PushTXPacket(Enums.DefaultPacketPriority(Enums.PACKET_STREAM_RESEND), Enums.PACKET_STREAM_RESEND, j.sn, 0, 0, j.compressionType, 0, j.data)
+		a.enqueuer.PushTXPacket(
+			Enums.DefaultPacketPriority(Enums.PACKET_STREAM_RESEND),
+			Enums.PACKET_STREAM_RESEND,
+			j.sn, 0, 0, j.compressionType, 0, j.data,
+		)
 	}
 
 	if a.enableControlReliability {
@@ -1313,161 +1291,209 @@ func (a *ARQ) checkRetransmits() {
 	}
 }
 
-// func (a *ARQ) checkControlRetransmits(now time.Time) {
-// 	a.mu.Lock()
-// 	defer a.mu.Unlock()
+func (a *ARQ) handleTerminalRetransmitState(now time.Time) bool {
+	a.mu.Lock()
+	if a.deferredClose {
+		shouldClose := len(a.sndBuf) == 0
+		shouldAbort := !a.deferredDeadline.IsZero() && now.After(a.deferredDeadline)
+		a.mu.Unlock()
 
-// 	for key, info := range a.controlSndBuf {
-// 		if info.TTL > 0 {
-// 			if now.Sub(info.CreatedAt) >= info.TTL {
-// 				delete(a.controlSndBuf, key)
-// 				a.mu.Unlock()
-// 				a.handleTrackedPacketTTLExpiry(info.PacketType, "Packet TTL expired")
-// 				a.mu.Lock()
-// 				return
-// 			}
-// 		} else {
-// 			maxRetries := a.controlMaxRetries
-// 			packetTTL := a.controlPacketTTL
+		if shouldClose || shouldAbort {
+			a.settleTerminalDrain()
+		}
 
-// 			if setupControlPacketTypes[info.PacketType] {
-// 				if maxRetries < 120 {
-// 					maxRetries = 120
-// 				}
-// 				if packetTTL < 300*time.Second {
-// 					packetTTL = 300 * time.Second
-// 				}
-// 			}
+		return a.isClosed()
+	}
 
-// 			if now.Sub(info.CreatedAt) >= packetTTL || info.Retries >= maxRetries {
-// 				delete(a.controlSndBuf, key)
-// 				continue
-// 			}
-// 		}
+	if a.waitingAck && !a.ackWaitDeadline.IsZero() && now.After(a.ackWaitDeadline) {
+		a.mu.Unlock()
+		a.finalizeClose("Terminal ACK wait timeout")
+		return true
+	}
 
-// 		if info.TTL == 0 {
-// 			// no-op: legacy retry ownership remains active for non-TTL packets
-// 		}
+	if a.rstReceived && a.state != StateReset {
+		a.mu.Unlock()
+		a.MarkRstReceived()
+		a.Abort("Peer reset signaled", false)
+		return true
+	}
 
-// 		if now.Sub(info.LastSentAt) < info.CurrentRTO {
-// 			continue
-// 		}
+	if now.Sub(a.lastActivity) > a.inactivityTimeout {
+		hasPending := len(a.sndBuf) > 0 || (a.enableControlReliability && len(a.controlSndBuf) > 0)
+		if hasPending {
+			a.lastActivity = now
+			a.mu.Unlock()
+			return false
+		}
 
-// 		ok := a.enqueuer.PushTXPacket(info.Priority, info.PacketType, info.SequenceNum, info.FragmentID, info.TotalFragments, 0, info.TTL, info.Payload)
-// 		if !ok {
-// 			info.LastSentAt = now
-// 			continue
-// 		}
+		a.mu.Unlock()
+		a.Abort("Stream Inactivity Timeout (Dead)", true)
+		return true
+	}
 
-// 		info.LastSentAt = now
-// 		info.Retries++
-// 		growth := 1.2
-// 		floorRto := a.controlRto
+	a.mu.Unlock()
+	return false
+}
 
-// 		if setupControlPacketTypes[info.PacketType] {
-// 			growth = 1.1
-// 			altFloor := 350 * time.Millisecond
-// 			if altFloor < floorRto {
-// 				floorRto = altFloor
-// 			}
-// 		}
+func (a *ARQ) checkControlRetransmits(now time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
-// 		grownRTO := time.Duration(float64(info.CurrentRTO) * growth)
-// 		info.CurrentRTO = time.Duration(minF(float64(a.controlMaxRto), maxF(float64(floorRto), float64(grownRTO))))
-// 	}
-// }
+	for key, info := range a.controlSndBuf {
+		if info.TTL > 0 {
+			if now.Sub(info.CreatedAt) >= info.TTL {
+				delete(a.controlSndBuf, key)
+				a.mu.Unlock()
+				a.handleTrackedPacketTTLExpiry(info.PacketType, "Packet TTL expired")
+				a.mu.Lock()
+				return
+			}
+		} else {
+			maxRetries := a.controlMaxRetries
+			packetTTL := a.controlPacketTTL
+
+			if setupControlPacketTypes[info.PacketType] {
+				if maxRetries < 120 {
+					maxRetries = 120
+				}
+				if packetTTL < 300*time.Second {
+					packetTTL = 300 * time.Second
+				}
+			}
+
+			if now.Sub(info.CreatedAt) >= packetTTL || info.Retries >= maxRetries {
+				delete(a.controlSndBuf, key)
+				continue
+			}
+		}
+
+		if info.TTL == 0 {
+			// no-op: legacy retry ownership remains active for non-TTL packets
+		}
+
+		if now.Sub(info.LastSentAt) < info.CurrentRTO {
+			continue
+		}
+
+		ok := a.enqueuer.PushTXPacket(info.Priority, info.PacketType, info.SequenceNum, info.FragmentID, info.TotalFragments, 0, info.TTL, info.Payload)
+		if !ok {
+			info.LastSentAt = now
+			continue
+		}
+
+		info.LastSentAt = now
+		info.Retries++
+		growth := 1.2
+		floorRto := a.controlRto
+
+		if setupControlPacketTypes[info.PacketType] {
+			growth = 1.1
+			altFloor := 350 * time.Millisecond
+			if altFloor < floorRto {
+				floorRto = altFloor
+			}
+		}
+
+		grownRTO := time.Duration(float64(info.CurrentRTO) * growth)
+		info.CurrentRTO = time.Duration(minF(float64(a.controlMaxRto), maxF(float64(floorRto), float64(grownRTO))))
+	}
+}
 
 // Abort performs aggressive RST TCP closure and instantly zeroes out local buffers
-// func (a *ARQ) Abort(reason string, sendRst bool) {
-// 	if !sendRst {
-// 		a.finalizeClose(reason)
-// 		return
-// 	}
+func (a *ARQ) Abort(reason string, sendRst bool) {
+	if !sendRst {
+		a.finalizeClose(reason)
+		return
+	}
 
-// 	a.mu.Lock()
-// 	if a.closed || a.isVirtual {
-// 		a.mu.Unlock()
-// 		return
-// 	}
-// 	alreadyAborting := a.rstSent || a.rstReceived ||
-// 		(a.waitingAck && a.waitingAckFor == Enums.PACKET_STREAM_RST) ||
-// 		(a.deferredClose && a.deferredPacket == Enums.PACKET_STREAM_RST)
-// 	if alreadyAborting {
-// 		a.mu.Unlock()
-// 		return
-// 	}
-// 	hasPendingData := len(a.sndBuf) > 0
-// 	a.closeReason = reason
-// 	a.setState(StateReset)
-// 	a.deferredClose = false
-// 	a.deferredReason = ""
-// 	a.deferredDeadline = time.Time{}
-// 	a.deferredPacket = 0
-// 	a.mu.Unlock()
+	a.mu.Lock()
+	if a.closed || a.isVirtual {
+		a.mu.Unlock()
+		return
+	}
 
-// 	if a.isClient {
-// 		a.mu.Lock()
-// 		a.clearAllQueues()
-// 		a.mu.Unlock()
-// 		a.emitTerminalPacket(Enums.PACKET_STREAM_RST, reason)
-// 		return
-// 	}
+	alreadyAborting := a.rstSent || a.rstReceived ||
+		(a.waitingAck && a.waitingAckFor == Enums.PACKET_STREAM_RST) ||
+		(a.deferredClose && a.deferredPacket == Enums.PACKET_STREAM_RST)
 
-// 	if hasPendingData {
-// 		a.deferTerminalPacket(reason, Enums.PACKET_STREAM_RST)
-// 		return
-// 	}
+	if alreadyAborting {
+		a.mu.Unlock()
+		return
+	}
 
-// 	a.emitTerminalPacket(Enums.PACKET_STREAM_RST, reason)
-// }
+	hasPendingData := len(a.sndBuf) > 0
+	a.closeReason = reason
+	a.setState(StateReset)
+	a.deferredClose = false
+	a.deferredReason = ""
+	a.deferredDeadline = time.Time{}
+	a.deferredPacket = 0
+	a.mu.Unlock()
 
-// func (a *ARQ) Close(reason string, sendFin bool) {
-// 	if sendFin {
-// 		a.deferTerminalPacket(reason, Enums.PACKET_STREAM_FIN)
-// 		return
-// 	}
-// 	a.finalizeClose(reason)
-// }
+	if a.isClient {
+		a.mu.Lock()
+		a.clearAllQueues(true)
+		a.mu.Unlock()
+		a.emitTerminalPacketWithTTL(Enums.PACKET_STREAM_RST, reason, 0)
+		return
+	}
+
+	if hasPendingData {
+		a.deferTerminalPacket(reason, Enums.PACKET_STREAM_RST)
+		return
+	}
+
+	a.emitTerminalPacketWithTTL(Enums.PACKET_STREAM_RST, reason, 0)
+}
+
+func (a *ARQ) Close(reason string, sendFin bool) {
+	if sendFin {
+		a.deferTerminalPacket(reason, Enums.PACKET_STREAM_FIN)
+		return
+	}
+
+	a.finalizeClose(reason)
+}
 
 // // ForceClose permanently closes the ARQ stream regardless of IsVirtual.
-// func (a *ARQ) ForceClose(reason string) {
-// 	a.mu.Lock()
-// 	wasVirtual := a.isVirtual
-// 	a.isVirtual = false
-// 	a.mu.Unlock()
+func (a *ARQ) ForceClose(reason string) {
+	a.mu.Lock()
+	wasVirtual := a.isVirtual
+	a.isVirtual = false
+	a.mu.Unlock()
 
-// 	if wasVirtual {
-// 		// Override and instantly kill
-// 		a.Abort(reason, false)
-// 	} else {
-// 		a.Close(reason, false)
-// 	}
-// }
+	if wasVirtual {
+		// Override and instantly kill
+		a.Abort(reason, false)
+	} else {
+		a.Close(reason, false)
+	}
+}
 
-// func (a *ARQ) CloseStream(force bool, ttl time.Duration) {
-// 	if force {
-// 		a.ForceClose("Force close requested")
-// 		return
-// 	}
+func (a *ARQ) CloseStream(force bool, ttl time.Duration) {
+	if force {
+		a.ForceClose("Force close requested")
+		return
+	}
 
-// 	a.mu.Lock()
-// 	alreadyTerminal := a.closed || a.waitingAck || a.deferredClose ||
-// 		a.state == StateClosing || a.state == StateDraining || a.state == StateTimeWait ||
-// 		a.state == StateReset || a.finSent || a.rstSent || a.rstReceived
-// 	a.mu.Unlock()
+	a.mu.Lock()
+	alreadyTerminal := a.closed || a.waitingAck || a.deferredClose ||
+		a.state == StateClosing || a.state == StateDraining || a.state == StateTimeWait ||
+		a.state == StateReset || a.finSent || a.rstSent || a.rstReceived
+	a.mu.Unlock()
 
-// 	if alreadyTerminal {
-// 		a.ForceClose("Forced close after repeated close request")
-// 		return
-// 	}
+	if alreadyTerminal {
+		a.ForceClose("Forced close after repeated close request")
+		return
+	}
 
-// 	if ttl <= 0 {
-// 		a.Abort("Close stream requested", true)
-// 		return
-// 	}
+	if ttl <= 0 {
+		a.Abort("Close stream requested", true)
+		return
+	}
 
-// 	a.emitTerminalPacketWithTTL(Enums.PACKET_STREAM_RST, "Close stream requested", ttl)
-// }
+	a.emitTerminalPacketWithTTL(Enums.PACKET_STREAM_RST, "Close stream requested", ttl)
+}
 
 // Done returns a channel that is closed when the ARQ context is cancelled or the stream is closed.
 func (a *ARQ) Done() <-chan struct{} {
