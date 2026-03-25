@@ -129,6 +129,28 @@ jobs:
           cp client_resolvers.simple dist/client_resolvers.txt || true
           cp server_config.toml.simple dist/server_config.toml || true
 
+      - name: Prepare smoke-test config (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: powershell
+        run: |
+          $val = 'smoke-test-key-12345678901234567890123456789012'
+          foreach ($f in @("dist/client_config.toml", "dist/server_config.toml")) {
+            if (Test-Path $f) {
+              (Get-Content $f) -replace 'ENCRYPTION_KEY\s*=\s*""', "ENCRYPTION_KEY = `"$val`"" | Set-Content $f
+            }
+          }
+
+      - name: Prepare smoke-test config (non-Windows)
+        if: ${{ matrix.os != 'windows-latest' }}
+        shell: bash
+        run: |
+          val="smoke-test-key-12345678901234567890123456789012"
+          for f in dist/client_config.toml dist/server_config.toml; do
+            if [ -f "$f" ]; then
+              sed -i "s/ENCRYPTION_KEY[[:space:]]*=[[:space:]]*\"\"/ENCRYPTION_KEY = \"$val\"/g" "$f"
+            fi
+          done
+
       - name: Smoke test executables (Windows)
         if: ${{ matrix.os == 'windows-latest' }}
         shell: powershell
