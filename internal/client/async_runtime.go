@@ -345,7 +345,10 @@ func (c *Client) asyncWriterWorker(ctx context.Context, id int, conn *net.UDPCon
 				_ = conn.SetWriteDeadline(time.Now().Add(c.tunnelPacketTimeout))
 			}
 
-			_, _ = conn.WriteToUDP(pkt.payload, addr)
+			sentAt := time.Now()
+			if _, err := conn.WriteToUDP(pkt.payload, addr); err == nil {
+				c.trackResolverSend(pkt.payload, addr.String(), pkt.conn.Key, sentAt)
+			}
 		}
 	}
 }
@@ -420,6 +423,8 @@ func (c *Client) handleInboundPacket(data []byte, addr *net.UDPAddr) {
 	if err != nil {
 		return
 	}
+
+	c.trackResolverSuccess(data, addr, time.Now())
 
 	// 2. Notify activity monitor (PingManager)
 	c.NotifyPacket(vpnPacket.PacketType, true)

@@ -48,6 +48,8 @@ type Client struct {
 	udpBufferPool    sync.Pool
 	resolverConnsMu  sync.Mutex
 	resolverConns    map[string]chan *net.UDPConn
+	resolverStatsMu  sync.Mutex
+	resolverPending  map[resolverSampleKey]resolverSample
 
 	// MTU States
 	syncedUploadMTU           int
@@ -207,6 +209,7 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 			},
 		},
 		resolverConns:             make(map[string]chan *net.UDPConn),
+		resolverPending:           make(map[resolverSampleKey]resolverSample),
 		mtuTestRetries:            cfg.MTUTestRetries,
 		mtuTestTimeout:            time.Duration(cfg.MTUTestTimeout * float64(time.Second)),
 		mtuSaveToFile:             cfg.SaveMTUServersToFile,

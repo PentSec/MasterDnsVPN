@@ -186,12 +186,17 @@ func (b *Balancer) GetBestConnection() (Connection, bool) {
 		idx := snap.valid[b.nextRandom()%uint64(len(snap.valid))]
 		return derefConnection(snap.connections, idx)
 	case BalancingLeastLoss:
+		if !b.hasLossSignal(snap) {
+			return b.roundRobinBestConnection(snap)
+		}
 		return b.bestScoredConnection(snap, b.lossScore)
 	case BalancingLowestLatency:
+		if !b.hasLatencySignal(snap) {
+			return b.roundRobinBestConnection(snap)
+		}
 		return b.bestScoredConnection(snap, b.latencyScore)
 	default:
-		pos := int(b.rrCounter.Add(1)-1) % len(snap.valid)
-		return derefConnection(snap.connections, snap.valid[pos])
+		return b.roundRobinBestConnection(snap)
 	}
 }
 
@@ -217,8 +222,14 @@ func (b *Balancer) GetUniqueConnections(requiredCount int) []Connection {
 	case BalancingRandom:
 		return b.selectRandom(snap, count)
 	case BalancingLeastLoss:
+		if !b.hasLossSignal(snap) {
+			return b.selectRoundRobin(snap, count)
+		}
 		return b.selectLowestScore(snap, count, b.lossScore)
 	case BalancingLowestLatency:
+		if !b.hasLatencySignal(snap) {
+			return b.selectRoundRobin(snap, count)
+		}
 		return b.selectLowestScore(snap, count, b.latencyScore)
 	default:
 		return b.selectRoundRobin(snap, count)
@@ -326,10 +337,9 @@ func (b *Balancer) selectLowestScore(snap *balancerSnapshot, count int, scorer f
 		score uint64
 	}
 
-	// For small N, we can just use a simple slice.
-	// We want to avoid full sort if possible.
+	ordered := b.rotatedValidIndices(snap, count)
 	scored := make([]scoredIdx, n)
-	for i, idx := range snap.valid {
+	for i, idx := range ordered {
 		scored[i] = scoredIdx{idx: idx, score: scorer(snap, idx)}
 	}
 
@@ -364,9 +374,10 @@ func snapshotConnections(connections []*Connection, indices []int) []Connection 
 }
 
 func (b *Balancer) bestScoredConnection(snap *balancerSnapshot, scorer func(*balancerSnapshot, int) uint64) (Connection, bool) {
+	ordered := b.rotatedValidIndices(snap, 1)
 	bestIndex := -1
 	var bestScore uint64
-	for _, idx := range snap.valid {
+	for _, idx := range ordered {
 		score := scorer(snap, idx)
 		if bestIndex == -1 || score < bestScore {
 			bestIndex = idx
@@ -414,6 +425,56 @@ func (b *Balancer) latencyScore(snap *balancerSnapshot, idx int) uint64 {
 		return 999000
 	}
 	return stats.rttMicrosSum.Load() / count
+}
+
+func (b *Balancer) roundRobinBestConnection(snap *balancerSnapshot) (Connection, bool) {
+	if snap == nil || len(snap.valid) == 0 {
+		return Connection{}, false
+	}
+	pos := int(b.rrCounter.Add(1)-1) % len(snap.valid)
+	return derefConnection(snap.connections, snap.valid[pos])
+}
+
+func (b *Balancer) rotatedValidIndices(snap *balancerSnapshot, step int) []int {
+	if snap == nil || len(snap.valid) == 0 {
+		return nil
+	}
+	if step < 1 {
+		step = 1
+	}
+
+	start := int(b.rrCounter.Add(uint64(step)) - uint64(step))
+	ordered := make([]int, len(snap.valid))
+	for i := range snap.valid {
+		ordered[i] = snap.valid[(start+i)%len(snap.valid)]
+	}
+	return ordered
+}
+
+func (b *Balancer) hasLossSignal(snap *balancerSnapshot) bool {
+	if snap == nil {
+		return false
+	}
+	for _, idx := range snap.valid {
+		stats := statsByIndex(snap, idx)
+		if stats != nil && stats.sent.Load() >= 5 {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *Balancer) hasLatencySignal(snap *balancerSnapshot) bool {
+	if snap == nil {
+		return false
+	}
+	for _, idx := range snap.valid {
+		stats := statsByIndex(snap, idx)
+		if stats != nil && stats.rttCount.Load() >= 5 {
+			return true
+		}
+	}
+	return false
 }
 
 func statsByIndex(snap *balancerSnapshot, idx int) *connectionStats {
