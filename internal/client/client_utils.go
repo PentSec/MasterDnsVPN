@@ -140,19 +140,6 @@ func (c *Client) getResolverUDPAddr(conn Connection) (*net.UDPAddr, error) {
 		c.resolverAddrMu.Unlock()
 		return existing, nil
 	}
-	// Prevent unbounded cache growth if many unique resolver labels appear
-	const maxAddrCacheSize = 5000
-	if len(c.resolverAddrCache) >= maxAddrCacheSize {
-		// Evict ~25% of entries to amortize cleanup cost
-		evictCount := maxAddrCacheSize / 4
-		for k := range c.resolverAddrCache {
-			delete(c.resolverAddrCache, k)
-			evictCount--
-			if evictCount <= 0 {
-				break
-			}
-		}
-	}
 	c.resolverAddrCache[label] = addr
 	c.resolverAddrMu.Unlock()
 	return addr, nil
@@ -623,49 +610,5 @@ func (c *Client) BuildConnectionMap() error {
 	}
 	c.balancer.SetConnections(pointers)
 
-	// Adaptive scaling: adjust parallelism & batch sizes based on resolver count,
-	// mirroring the Python edition's profile-based scaling for better performance
-	// under varying resolver counts.
-	c.applyAdaptiveScalingProfile(len(connections))
-
 	return nil
-}
-
-// applyAdaptiveScalingProfile adjusts runtime parameters based on the number of
-// connections, similar to the Python version's "small"/"medium"/"large" profiles.
-func (c *Client) applyAdaptiveScalingProfile(connectionCount int) {
-	if c == nil {
-		return
-	}
-
-	switch {
-	case connectionCount <= 50:
-		// Small profile: conservative parallelism
-		if c.cfg.MTUTestParallelism <= 10 {
-			c.cfg.MTUTestParallelism = 10
-		}
-		if c.cfg.RecheckBatchSize < 4 {
-			c.cfg.RecheckBatchSize = 4
-		}
-	case connectionCount <= 1000:
-		// Medium profile: moderate parallelism
-		if c.cfg.MTUTestParallelism <= 12 {
-			c.cfg.MTUTestParallelism = 12
-		}
-		if c.cfg.RecheckBatchSize < 5 {
-			c.cfg.RecheckBatchSize = 5
-		}
-	default:
-		// Large profile: aggressive parallelism
-		if c.cfg.MTUTestParallelism <= 16 {
-			c.cfg.MTUTestParallelism = 16
-		}
-		if c.cfg.RecheckBatchSize < 8 {
-			c.cfg.RecheckBatchSize = 8
-		}
-		// For large resolver sets, increase recheck interval to avoid thundering herd
-		if c.cfg.RecheckInactiveIntervalSeconds < 1200.0 {
-			c.cfg.RecheckInactiveIntervalSeconds = 1200.0
-		}
-	}
 }
