@@ -130,6 +130,69 @@ func TestProcessDeferredStreamSynQueuesConnectedAndEnablesIO(t *testing.T) {
 	}
 }
 
+func TestProcessDeferredStreamSynDoesNotAttachAfterCancellation(t *testing.T) {
+	s := newTestServerForStreamSyn("TCP")
+	record := newTestSessionRecord(46)
+	record.DownloadCompression = 0
+	s.sessions.byID[record.ID] = record
+
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	conn := &testNetConn{}
+	s.dialStreamUpstreamFn = func(network string, address string, timeout time.Duration) (net.Conn, error) {
+		close(dialStarted)
+		<-releaseDial
+		return conn, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	packet := packetWithSession(Enums.PACKET_STREAM_SYN, record.ID, record.Cookie, 16)
+	go func() {
+		defer close(done)
+		s.processDeferredStreamSyn(ctx, packet)
+	}()
+
+	select {
+	case <-dialStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deferred stream dial to start")
+	}
+
+	cancel()
+	close(releaseDial)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deferred stream processing to finish")
+	}
+
+	stream, ok := record.getStream(packet.StreamID)
+	if !ok || stream == nil {
+		t.Fatal("expected stream to remain allocated for cancelled attempt")
+	}
+
+	stream.mu.RLock()
+	connected := stream.Connected
+	upstream := stream.UpstreamConn
+	stream.mu.RUnlock()
+	if connected {
+		t.Fatal("expected cancelled deferred stream connect to avoid attaching upstream")
+	}
+	if upstream != nil {
+		t.Fatal("expected cancelled deferred stream connect to leave no upstream connection attached")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if conn.closed {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected cancelled deferred stream connect to close late dial result")
+}
+
 func TestHandleStreamSynFastPathsAlreadyConnectedStream(t *testing.T) {
 	s := newTestServerForStreamSyn("TCP")
 	record := newTestSessionRecord(40)
@@ -204,6 +267,71 @@ func TestHandleSOCKS5SynFastPathsAlreadyConnectedStream(t *testing.T) {
 	if pkt, ok := stream.TXQueue.Get(key); !ok || pkt == nil {
 		t.Fatal("expected SOCKS5_CONNECTED to be queued by fast-path")
 	}
+}
+
+func TestProcessDeferredSOCKS5SynDoesNotAttachAfterCancellation(t *testing.T) {
+	s := newTestServerForStreamSyn("SOCKS5")
+	record := newTestSessionRecord(47)
+	record.DownloadCompression = 0
+	s.sessions.byID[record.ID] = record
+
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	conn := &testNetConn{}
+	s.dialStreamUpstreamFn = func(network string, address string, timeout time.Duration) (net.Conn, error) {
+		close(dialStarted)
+		<-releaseDial
+		return conn, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	packet := packetWithSession(Enums.PACKET_SOCKS5_SYN, record.ID, record.Cookie, 17)
+	packet.Payload = []byte{0x01, 149, 154, 167, 92, 0x01, 0xBB}
+	packet.TotalFragments = 1
+	go func() {
+		defer close(done)
+		s.processDeferredSOCKS5Syn(ctx, packet)
+	}()
+
+	select {
+	case <-dialStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deferred SOCKS5 dial to start")
+	}
+
+	cancel()
+	close(releaseDial)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deferred SOCKS5 processing to finish")
+	}
+
+	stream, ok := record.getStream(packet.StreamID)
+	if !ok || stream == nil {
+		t.Fatal("expected stream to remain allocated for cancelled SOCKS5 attempt")
+	}
+
+	stream.mu.RLock()
+	connected := stream.Connected
+	upstream := stream.UpstreamConn
+	stream.mu.RUnlock()
+	if connected {
+		t.Fatal("expected cancelled deferred SOCKS5 connect to avoid attaching upstream")
+	}
+	if upstream != nil {
+		t.Fatal("expected cancelled deferred SOCKS5 connect to leave no upstream connection attached")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if conn.closed {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected cancelled deferred SOCKS5 connect to close late dial result")
 }
 
 func TestHandleSOCKS5SynFastPathRejectsDifferentTarget(t *testing.T) {

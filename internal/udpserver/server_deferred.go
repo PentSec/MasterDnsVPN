@@ -197,6 +197,10 @@ func (s *Server) processDeferredStreamSyn(ctx context.Context, vpnPacket VpnProt
 		s.finalizeDeferredConnectStream(vpnPacket.SessionID, vpnPacket.StreamID, "stream", "nil-conn")
 		return
 	}
+	if ctx != nil && ctx.Err() != nil {
+		_ = upstreamConn.Close()
+		return
+	}
 
 	if record.isClosed() || !stream.attachUpstreamConn(upstreamConn, s.cfg.ForwardIP, uint16(s.cfg.ForwardPort), "CONNECTED") {
 		_ = upstreamConn.Close()
@@ -403,6 +407,10 @@ func (s *Server) processDeferredSOCKS5Syn(ctx context.Context, vpnPacket VpnProt
 		)
 		s.finalizeStreamArtifacts(vpnPacket.SessionID, vpnPacket.StreamID)
 
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		_ = upstreamConn.Close()
 		return
 	}
 

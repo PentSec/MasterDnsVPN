@@ -160,6 +160,12 @@ func (s *Server) dialTCPTargetContext(ctx context.Context, address string) (net.
 	}()
 	select {
 	case <-ctx.Done():
+		go func() {
+			result := <-resultCh
+			if result.conn != nil {
+				_ = result.conn.Close()
+			}
+		}()
 		return nil, ctx.Err()
 	case result := <-resultCh:
 		if s != nil && s.log != nil {
