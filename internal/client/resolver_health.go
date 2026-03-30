@@ -23,6 +23,7 @@ type resolverHealthState struct {
 type resolverRecheckState struct {
 	FailCount int
 	NextAt    time.Time
+	InFlight  bool
 }
 
 type resolverDisabledState struct {
@@ -125,7 +126,7 @@ func (c *Client) nextResolverHealthWait(now time.Time) time.Duration {
 
 	for key, meta := range c.resolverRecheck {
 		conn := c.connectionPtrByKey(key)
-		if conn == nil || conn.IsValid || meta.NextAt.IsZero() {
+		if conn == nil || conn.IsValid || meta.NextAt.IsZero() || meta.InFlight {
 			continue
 		}
 		dueIn := time.Until(meta.NextAt)
@@ -436,6 +437,7 @@ func (c *Client) scheduleResolverRecheckFailure(serverKey string, runtimePriorit
 	}
 	delay += deterministicResolverJitter(serverKey, delay)
 	meta.NextAt = now.Add(delay)
+	meta.InFlight = false
 	c.resolverRecheck[serverKey] = meta
 
 	if state, ok := c.runtimeDisabled[serverKey]; ok {
@@ -482,12 +484,27 @@ func (c *Client) runResolverRecheckBatch(ctx context.Context, now time.Time) {
 			continue
 		}
 
-		if c.recheckResolverConnection(ctx, conn) {
-			c.reactivateResolverConnection(candidate.key)
-			continue
+		c.resolverHealthMu.Lock()
+		if m, ok := c.resolverRecheck[candidate.key]; ok {
+			m.InFlight = true
+			c.resolverRecheck[candidate.key] = m
 		}
+		c.resolverHealthMu.Unlock()
 
-		c.scheduleResolverRecheckFailure(candidate.key, candidate.runtimePriority, now)
+		go func(cand resolverRecheckCandidate, cn *Connection) {
+			defer func() {
+				if r := recover(); r != nil {
+					c.scheduleResolverRecheckFailure(cand.key, cand.runtimePriority, c.now())
+				}
+			}()
+
+			if c.recheckResolverConnection(ctx, cn) {
+				c.reactivateResolverConnection(cand.key)
+				return
+			}
+
+			c.scheduleResolverRecheckFailure(cand.key, cand.runtimePriority, c.now())
+		}(candidate, conn)
 	}
 }
 
@@ -503,7 +520,7 @@ func (c *Client) collectDueResolverRechecks(now time.Time) []resolverRecheckCand
 	normalCandidates := make([]resolverRecheckCandidate, 0, len(c.connections))
 	for key, meta := range c.resolverRecheck {
 		conn := c.connectionPtrByKey(key)
-		if conn == nil || conn.IsValid {
+		if conn == nil || conn.IsValid || meta.InFlight {
 			continue
 		}
 		if !meta.NextAt.IsZero() && meta.NextAt.After(now) {
@@ -588,12 +605,33 @@ func (c *Client) recheckResolverConnection(ctx context.Context, conn *Connection
 	}
 	defer transport.conn.Close()
 
-	upOK, err := c.sendUploadMTUProbe(ctx, conn, transport, c.syncedUploadMTU, mtuProbeOptions{Quiet: true})
-	if err != nil || !upOK {
+	upOK := false
+	for attempt := 0; attempt < c.mtuTestRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+		passed, err := c.sendUploadMTUProbe(ctx, conn, transport, c.syncedUploadMTU, mtuProbeOptions{Quiet: true, IsRetry: attempt > 0})
+		if err == nil && passed {
+			upOK = true
+			break
+		}
+	}
+	if !upOK {
 		return false
 	}
-	downOK, err := c.sendDownloadMTUProbe(ctx, conn, transport, c.syncedDownloadMTU, c.syncedUploadMTU, mtuProbeOptions{Quiet: true})
-	if err != nil || !downOK {
+
+	downOK := false
+	for attempt := 0; attempt < c.mtuTestRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+		passed, err := c.sendDownloadMTUProbe(ctx, conn, transport, c.syncedDownloadMTU, c.syncedUploadMTU, mtuProbeOptions{Quiet: true, IsRetry: attempt > 0})
+		if err == nil && passed {
+			downOK = true
+			break
+		}
+	}
+	if !downOK {
 		return false
 	}
 
