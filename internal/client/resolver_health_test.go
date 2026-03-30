@@ -404,6 +404,71 @@ func TestResolverHealthRecheckBatchDoesNotLaunchSameResolverTwiceWhileInFlight(t
 	}, "expected failed in-flight recheck to clear in-flight state and schedule retry")
 }
 
+func TestResolverHealthSuccessfulRecheckClearsInFlightWhenResolverBecomesValidElsewhere(t *testing.T) {
+	c := buildTestClientWithResolvers(config.ClientConfig{
+		RecheckInactiveServersEnabled:  true,
+		RecheckInactiveIntervalSeconds: 60.0,
+		RecheckServerIntervalSeconds:   3.0,
+		RecheckBatchSize:               1,
+	}, "a")
+	c.successMTUChecks = true
+	c.syncedUploadMTU = 120
+	c.syncedDownloadMTU = 180
+
+	if !c.balancer.SetConnectionValidity("a", false) {
+		t.Fatal("expected resolver a to become invalid")
+	}
+
+	c.initResolverRecheckMeta()
+	now := time.Date(2026, 3, 30, 9, 27, 0, 0, time.UTC)
+	c.nowFn = func() time.Time { return now }
+
+	c.resolverHealthMu.Lock()
+	c.resolverRecheck["a"] = resolverRecheckState{
+		FailCount: 1,
+		NextAt:    now.Add(-time.Second),
+	}
+	c.runtimeDisabled["a"] = resolverDisabledState{
+		DisabledAt:  now.Add(-time.Minute),
+		NextRetryAt: now.Add(-time.Second),
+		RetryCount:  1,
+		Cause:       "timeout window",
+	}
+	c.resolverHealthMu.Unlock()
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	c.recheckConnectionFn = func(conn *Connection) bool {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		return true
+	}
+
+	c.runResolverRecheckBatch(context.Background(), now)
+
+	select {
+	case <-started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected in-flight successful recheck to start")
+	}
+
+	if !c.balancer.SetConnectionValidity("a", true) {
+		t.Fatal("expected resolver a to become valid through an external path")
+	}
+
+	close(release)
+
+	waitForResolverHealthCondition(t, 500*time.Millisecond, func() bool {
+		c.resolverHealthMu.Lock()
+		defer c.resolverHealthMu.Unlock()
+		meta := c.resolverRecheck["a"]
+		return !meta.InFlight
+	}, "expected successful recheck fallback path to clear in-flight marker")
+}
+
 func TestResolverHealthRecheckBatchHonorsLimit(t *testing.T) {
 	c := buildTestClientWithResolvers(config.ClientConfig{
 		RecheckInactiveServersEnabled:  true,

@@ -412,6 +412,20 @@ func (c *Client) reactivateResolverConnection(serverKey string) bool {
 	return true
 }
 
+func (c *Client) clearResolverRecheckInFlight(serverKey string) {
+	if c == nil || serverKey == "" {
+		return
+	}
+
+	c.resolverHealthMu.Lock()
+	meta, ok := c.resolverRecheck[serverKey]
+	if ok && meta.InFlight {
+		meta.InFlight = false
+		c.resolverRecheck[serverKey] = meta
+	}
+	c.resolverHealthMu.Unlock()
+}
+
 func (c *Client) scheduleResolverRecheckFailure(serverKey string, runtimePriority bool, now time.Time) {
 	if c == nil || serverKey == "" {
 		return
@@ -499,7 +513,9 @@ func (c *Client) runResolverRecheckBatch(ctx context.Context, now time.Time) {
 			}()
 
 			if c.recheckResolverConnection(ctx, cn) {
-				c.reactivateResolverConnection(cand.key)
+				if !c.reactivateResolverConnection(cand.key) {
+					c.clearResolverRecheckInFlight(cand.key)
+				}
 				return
 			}
 
