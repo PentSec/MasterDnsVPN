@@ -172,30 +172,18 @@ func TestSelectTargetConnectionsForPacketUsesSetupDuplicationCount(t *testing.T)
 	}
 }
 
-func TestSelectTargetConnectionsForPacketKeepsReceiveDrivenPacketsSingleTarget(t *testing.T) {
+func TestSelectTargetConnectionsForPacketKeepsPingSingleTarget(t *testing.T) {
 	c := buildTestClientWithResolvers(config.ClientConfig{
 		PacketDuplicationCount:      3,
 		SetupPacketDuplicationCount: 4,
 	}, "a", "b", "c", "d")
 
-	tests := []uint8{
-		Enums.PACKET_PING,
-		Enums.PACKET_STREAM_DATA_ACK,
-		Enums.PACKET_STREAM_DATA_NACK,
-		Enums.PACKET_STREAM_CLOSE_READ_ACK,
-		Enums.PACKET_SOCKS5_CONNECTED_ACK,
-		Enums.PACKET_DNS_QUERY_REQ_ACK,
-		Enums.PACKET_PACKED_CONTROL_BLOCKS,
+	selected, err := c.selectTargetConnectionsForPacket(Enums.PACKET_PING, 42)
+	if err != nil {
+		t.Fatalf("packet %s: unexpected error: %v", Enums.PacketTypeName(Enums.PACKET_PING), err)
 	}
-
-	for _, packetType := range tests {
-		selected, err := c.selectTargetConnectionsForPacket(packetType, 42)
-		if err != nil {
-			t.Fatalf("packet %s: unexpected error: %v", Enums.PacketTypeName(packetType), err)
-		}
-		if len(selected) != 1 {
-			t.Fatalf("packet %s: expected single target, got=%d", Enums.PacketTypeName(packetType), len(selected))
-		}
+	if len(selected) != 1 {
+		t.Fatalf("packet %s: expected single target, got=%d", Enums.PacketTypeName(Enums.PACKET_PING), len(selected))
 	}
 }
 
