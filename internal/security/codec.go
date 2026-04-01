@@ -123,12 +123,12 @@ func (c *Codec) Method() int {
 	return c.method
 }
 
-func (c *Codec) EncryptAndEncodeLowerBase32(data []byte) (string, error) {
+func (c *Codec) EncryptAndEncode(data []byte) (string, error) {
 	if c == nil {
 		return "", ErrInvalidCodecMethod
 	}
 	if c.method == 0 {
-		return baseCodec.EncodeLowerBase32(data), nil
+		return baseCodec.Encode(data), nil
 	}
 
 	bufPtr := getCryptoBuffer(len(data) + 64)
@@ -138,15 +138,15 @@ func (c *Codec) EncryptAndEncodeLowerBase32(data []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return baseCodec.EncodeLowerBase32(encrypted), nil
+	return baseCodec.Encode(encrypted), nil
 }
 
-func (c *Codec) DecodeLowerBase32AndDecrypt(data []byte) ([]byte, error) {
+func (c *Codec) DecodeAndDecrypt(data []byte) ([]byte, error) {
 	if c == nil {
 		return nil, ErrInvalidCodecMethod
 	}
 
-	decoded, err := baseCodec.DecodeLowerBase32(data)
+	decoded, err := baseCodec.Decode(data)
 	if err != nil {
 		return nil, err
 	}
@@ -156,12 +156,12 @@ func (c *Codec) DecodeLowerBase32AndDecrypt(data []byte) ([]byte, error) {
 	return c.decrypt(nil, decoded)
 }
 
-func (c *Codec) DecodeLowerBase32StringAndDecrypt(data string) ([]byte, error) {
+func (c *Codec) DecodeStringAndDecrypt(data string) ([]byte, error) {
 	if c == nil {
 		return nil, ErrInvalidCodecMethod
 	}
 
-	decoded, err := baseCodec.DecodeLowerBase32String(data)
+	decoded, err := baseCodec.DecodeString(data)
 	if err != nil {
 		return nil, err
 	}

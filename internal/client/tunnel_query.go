@@ -42,7 +42,7 @@ func (c *Client) buildEncodedAutoWithCompressionTrace(options VpnProto.BuildOpti
 	if c.codec == nil {
 		return "", VpnProto.ErrCodecUnavailable
 	}
-	return c.codec.EncryptAndEncodeLowerBase32(raw)
+	return c.codec.EncryptAndEncode(raw)
 }
 
 // buildTunnelTXTQuery builds an encoded tunnel query with automatic option handling.
