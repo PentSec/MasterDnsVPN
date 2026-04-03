@@ -46,17 +46,17 @@ UDP_PORT = 53
 
 # Number of UDP reader goroutines.
 # If <= 0, code falls back to an auto default.
-UDP_READERS = 2
+UDP_READERS = 6
 
 # Number of DNS request workers that process incoming packets.
 # If <= 0, code falls back to an auto default.
-DNS_REQUEST_WORKERS = 4
+DNS_REQUEST_WORKERS = 6
 
 # Maximum queued requests waiting behind request workers.
 # If the queue is full, packets are dropped and rate-limited overload logs appear.
 # With the current client sample using larger RX buffering, keeping this at 8192
 # helps the server absorb short bursts without dropping front-door requests too early.
-MAX_CONCURRENT_REQUESTS = 12288
+MAX_CONCURRENT_REQUESTS = 16384
 
 # UDP socket read/write buffer size in bytes.
 SOCKET_BUFFER_SIZE = 8388608
@@ -76,7 +76,7 @@ DROP_LOG_INTERVAL_SECONDS = 2.0
 
 # Worker count for deferred per-session processing.
 # These workers serialize heavy or ordering-sensitive tasks behind session keys.
-DEFERRED_SESSION_WORKERS = 2
+DEFERRED_SESSION_WORKERS = 4
 
 # Queue limit for deferred per-session work.
 # Keep this a bit higher than the client-side setup pressure so bursty SYN/SOCKS/DNS
