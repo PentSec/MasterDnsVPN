@@ -173,15 +173,13 @@ func (c *Client) runResolverHealthLoop(ctx context.Context) {
 	}
 
 	for {
-		if ctx != nil {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
 
-		if c.cfg.RecheckInactiveServersEnabled && c.successMTUChecks {
+		if c.cfg.RecheckInactiveServersEnabled {
 			connections := make([]Connection, 0, parallelism)
 			now := c.now()
 			for len(connections) < parallelism {
@@ -213,7 +211,7 @@ func (c *Client) runResolverHealthLoop(ctx context.Context) {
 
 					upOK := false
 					for attempt := 0; attempt < c.mtuTestRetries; attempt++ {
-						if ctx != nil && ctx.Err() != nil {
+						if ctx.Err() != nil {
 							return
 						}
 						passed, _, err := c.sendUploadMTUProbe(ctx, conn, transport, c.syncedUploadMTU, mtuProbeOptions{
@@ -231,7 +229,7 @@ func (c *Client) runResolverHealthLoop(ctx context.Context) {
 
 					downOK := false
 					for attempt := 0; attempt < c.mtuTestRetries; attempt++ {
-						if ctx != nil && ctx.Err() != nil {
+						if ctx.Err() != nil {
 							return
 						}
 						passed, _, err := c.sendDownloadMTUProbe(ctx, conn, transport, c.syncedDownloadMTU, c.syncedUploadMTU, mtuProbeOptions{
@@ -257,10 +255,6 @@ func (c *Client) runResolverHealthLoop(ctx context.Context) {
 		}
 
 		timer := time.NewTimer(pollInterval)
-		if ctx == nil {
-			<-timer.C
-			continue
-		}
 		select {
 		case <-ctx.Done():
 			timer.Stop()

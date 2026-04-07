@@ -101,62 +101,16 @@ func (b *Balancer) SetConnections(connections []*Connection) {
 	b.version.Add(1)
 }
 
-func (b *Balancer) Activate(key string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	idx, ok := b.indexByKey[key]
-	if !ok || idx < 0 || idx >= len(b.connections) {
-		return
-	}
-	if b.connections[idx].IsValid {
-		return
-	}
-
-	b.connections[idx].IsValid = true
-	b.rebuildStateIndicesLocked()
-}
-
-func (b *Balancer) Deactivate(key string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	idx, ok := b.indexByKey[key]
-	if !ok || idx < 0 || idx >= len(b.connections) {
-		return
-	}
-	if !b.connections[idx].IsValid {
-		return
-	}
-
-	b.connections[idx].IsValid = false
-	b.rebuildStateIndicesLocked()
-}
-
 func (b *Balancer) ActiveCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.activeIDs)
 }
 
-func (b *Balancer) InactiveCount() int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return len(b.inactiveIDs)
-}
-
 func (b *Balancer) TotalCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.connections)
-}
-
-func (b *Balancer) ConnectionCount() int {
-	return b.TotalCount()
-}
-
-func (b *Balancer) ValidCount() int {
-	return b.ActiveCount()
 }
 
 func (b *Balancer) GetConnectionByKey(key string) (Connection, bool) {
@@ -178,7 +132,6 @@ func (b *Balancer) SetConnectionValidity(key string, valid bool) bool {
 	if !ok || idx < 0 || idx >= len(b.connections) {
 		return false
 	}
-
 	if b.connections[idx].IsValid == valid {
 		return true
 	}
@@ -433,10 +386,6 @@ func (b *Balancer) NextInactiveConnectionForHealthCheck(now time.Time, minInterv
 	}
 
 	return Connection{}, false
-}
-
-func (b *Balancer) GetAllValidConnections() []Connection {
-	return b.GetAllActiveConnections()
 }
 
 func (b *Balancer) AverageRTT(serverKey string) (time.Duration, bool) {
