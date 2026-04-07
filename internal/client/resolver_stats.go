@@ -61,6 +61,40 @@ func (c *Client) noteResolverSuccess(serverKey string, rtt time.Duration) {
 	c.runtime.NoteSuccess(serverKey, rtt, c.now(), c.autoDisableTimeoutWindow())
 }
 
+func (c *Client) noteResolverTimeout(serverKey string, at time.Time) {
+	if c == nil || serverKey == "" {
+		return
+	}
+	if at.IsZero() {
+		at = c.now()
+	}
+	c.runtime.NoteTimeout(serverKey, at, c.autoDisableTimeoutWindow())
+}
+
+func (c *Client) noteResolverFailure(serverKey string, at time.Time) {
+	if c == nil || serverKey == "" {
+		return
+	}
+	if at.IsZero() {
+		at = c.now()
+	}
+	c.runtime.NoteFailure(serverKey, at, c.autoDisableTimeoutWindow())
+}
+
+func (c *Client) recordResolverHealthEvent(serverKey string, success bool, now time.Time) {
+	if c == nil || serverKey == "" {
+		return
+	}
+	c.runtime.RecordHealthEvent(serverKey, success, now, c.autoDisableTimeoutWindow())
+}
+
+func (c *Client) retractResolverTimeoutEvent(serverKey string, timedOutAt time.Time, now time.Time) {
+	if c == nil || serverKey == "" || timedOutAt.IsZero() {
+		return
+	}
+	c.runtime.RetractTimeoutEvent(serverKey, timedOutAt, now, c.autoDisableTimeoutWindow())
+}
+
 func (c *Client) trackResolverSend(packet []byte, resolverAddr string, localAddr string, serverKey string, sentAt time.Time) {
 	if c == nil || len(packet) < 2 || resolverAddr == "" || serverKey == "" {
 		return

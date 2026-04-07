@@ -75,22 +75,23 @@ type Client struct {
 	streamResolverFailoverCooldown        time.Duration
 
 	// Session States
-	sessionID           uint8
-	sessionCookie       uint8
-	responseMode        uint8
-	sessionReady        bool
-	initStateMu         sync.Mutex
-	sessionInitReady    bool
-	sessionInitBase64   bool
-	sessionInitPayload  []byte
-	sessionInitVerify   [4]byte
-	sessionInitCursor   int
-	sessionInitBusyUnix atomic.Int64
-	sessionResetPending atomic.Bool
-	runtimeResetPending atomic.Bool
-	sessionResetSignal  chan struct{}
-	rxDroppedPackets    atomic.Uint64
-	lastRXDropLogUnix   atomic.Int64
+	sessionID             uint8
+	sessionCookie         uint8
+	responseMode          uint8
+	sessionReady          bool
+	initStateMu           sync.Mutex
+	sessionInitReady      bool
+	sessionInitBase64     bool
+	sessionInitPayload    []byte
+	sessionInitVerify     [4]byte
+	sessionInitCursor     int
+	sessionInitBusyUnix   atomic.Int64
+	sessionResetPending   atomic.Bool
+	runtimeResetPending   atomic.Bool
+	resolverHealthStarted atomic.Bool
+	sessionResetSignal    chan struct{}
+	rxDroppedPackets      atomic.Uint64
+	lastRXDropLogUnix     atomic.Int64
 
 	// Async Runtime Workers & Channels
 	asyncWG              sync.WaitGroup
@@ -347,6 +348,9 @@ func (c *Client) Run(ctx context.Context) error {
 				}
 
 				c.successMTUChecks = true
+				if c.resolverHealthStarted.CompareAndSwap(false, true) {
+					go c.runResolverHealthLoop(ctx)
+				}
 				c.ShortPrintBanner()
 			}
 

@@ -16,6 +16,16 @@ type streamRouteState struct {
 	CachedPlanVersion    uint64
 }
 
+type resolverHealthEvent struct {
+	At time.Time
+}
+
+type resolverHealthState struct {
+	Events           []resolverHealthEvent
+	TimeoutOnlySince time.Time
+	LastSuccessAt    time.Time
+}
+
 // ResolverRuntime is the owner for resolver catalog and runtime resolver state.
 type ResolverRuntime struct {
 	mu         sync.RWMutex

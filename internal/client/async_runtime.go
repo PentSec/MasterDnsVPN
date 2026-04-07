@@ -376,15 +376,6 @@ func (c *Client) StartAsyncRuntime(parentCtx context.Context) error {
 	c.asyncWG.Add(1)
 	go c.asyncStreamCleanupWorker(runtimeCtx)
 
-	// 10. Resolver timeout/health runtime.
-	// Keep this loop always running so resolver timeout samples are still pruned
-	// even when auto-disable and background recheck are disabled.
-	c.asyncWG.Add(1)
-	go func() {
-		defer c.asyncWG.Done()
-		c.runResolverHealthLoop(runtimeCtx)
-	}()
-
 	started = true
 	return nil
 }

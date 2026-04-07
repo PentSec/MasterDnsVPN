@@ -178,6 +178,7 @@ func (b *Balancer) SetConnectionValidity(key string, valid bool) bool {
 	if !ok || idx < 0 || idx >= len(b.connections) {
 		return false
 	}
+
 	if b.connections[idx].IsValid == valid {
 		return true
 	}
