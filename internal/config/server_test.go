@@ -142,3 +142,69 @@ func TestServerConfigEffectiveSizingUsesSmartFloorsAndDerivedCapacities(t *testi
 		t.Fatalf("expected derived socks5 fragment store cap, got=%d", got)
 	}
 }
+
+func TestServerConfigClientPolicyLimitsAreSafelyClamped(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "server_config.toml")
+
+	if err := os.WriteFile(configPath, []byte(`
+PROTOCOL_TYPE = "SOCKS5"
+UDP_PORT = 53
+DOMAIN = ["config.example.com"]
+DATA_ENCRYPTION_METHOD = 1
+SUPPORTED_UPLOAD_COMPRESSION_TYPES = [0, 3]
+SUPPORTED_DOWNLOAD_COMPRESSION_TYPES = [0, 3]
+MAX_ALLOWED_CLIENT_PACKET_DUPLICATION_COUNT = 999
+MAX_ALLOWED_CLIENT_SETUP_PACKET_DUPLICATION_COUNT = 999
+MAX_ALLOWED_CLIENT_UPLOAD_MTU = 999
+MAX_ALLOWED_CLIENT_DOWNLOAD_MTU = 999999
+MAX_ALLOWED_CLIENT_RX_TX_WORKERS = 999
+MIN_ALLOWED_CLIENT_PING_AGGRESSIVE_INTERVAL_SECONDS = 0.001
+MAX_ALLOWED_CLIENT_PACKETS_PER_BATCH = 999
+MAX_ALLOWED_CLIENT_ARQ_WINDOW_SIZE = 999999
+MAX_ALLOWED_CLIENT_ARQ_DATA_NACK_MAX_GAP = 999
+MIN_ALLOWED_CLIENT_COMPRESSION_MIN_SIZE = 999999
+MIN_ALLOWED_CLIENT_ARQ_INITIAL_RTO_SECONDS = 0.001
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile config failed: %v", err)
+	}
+
+	cfg, err := LoadServerConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadServerConfig returned error: %v", err)
+	}
+
+	if cfg.ClientMaxPacketDuplicationCount != 15 {
+		t.Fatalf("unexpected packet duplication clamp: got=%d want=%d", cfg.ClientMaxPacketDuplicationCount, 15)
+	}
+	if cfg.ClientMaxSetupDuplicationCount != 15 {
+		t.Fatalf("unexpected setup duplication clamp: got=%d want=%d", cfg.ClientMaxSetupDuplicationCount, 15)
+	}
+	if cfg.ClientMaxUploadMTU != 255 {
+		t.Fatalf("unexpected upload mtu clamp: got=%d want=%d", cfg.ClientMaxUploadMTU, 255)
+	}
+	if cfg.ClientMaxDownloadMTU != 65535 {
+		t.Fatalf("unexpected download mtu clamp: got=%d want=%d", cfg.ClientMaxDownloadMTU, 65535)
+	}
+	if cfg.ClientMaxRxTxWorkers != 255 {
+		t.Fatalf("unexpected worker clamp: got=%d want=%d", cfg.ClientMaxRxTxWorkers, 255)
+	}
+	if cfg.ClientMinPingAggressiveInterval != 0.05 {
+		t.Fatalf("unexpected ping interval clamp: got=%f want=%f", cfg.ClientMinPingAggressiveInterval, 0.05)
+	}
+	if cfg.ClientMaxPacketsPerBatch != 255 {
+		t.Fatalf("unexpected packets per batch clamp: got=%d want=%d", cfg.ClientMaxPacketsPerBatch, 255)
+	}
+	if cfg.ClientMaxARQWindowSize != 8000 {
+		t.Fatalf("unexpected arq window clamp: got=%d want=%d", cfg.ClientMaxARQWindowSize, 8000)
+	}
+	if cfg.ClientMaxARQDataNackMaxGap != 255 {
+		t.Fatalf("unexpected arq nack gap clamp: got=%d want=%d", cfg.ClientMaxARQDataNackMaxGap, 255)
+	}
+	if cfg.ClientMinCompressionMinSize != 65535 {
+		t.Fatalf("unexpected compression min size clamp: got=%d want=%d", cfg.ClientMinCompressionMinSize, 65535)
+	}
+	if cfg.ClientMinARQInitialRTOSeconds != 0.05 {
+		t.Fatalf("unexpected arq initial rto clamp: got=%f want=%f", cfg.ClientMinARQInitialRTOSeconds, 0.05)
+	}
+}

@@ -86,6 +86,17 @@ type ServerConfig struct {
 	ARQDataNackRepeatSeconds          float64  `toml:"ARQ_DATA_NACK_REPEAT_SECONDS"`
 	ARQTerminalDrainTimeoutSec        float64  `toml:"ARQ_TERMINAL_DRAIN_TIMEOUT_SECONDS"`
 	ARQTerminalAckWaitTimeoutSec      float64  `toml:"ARQ_TERMINAL_ACK_WAIT_TIMEOUT_SECONDS"`
+	ClientMaxPacketDuplicationCount   int      `toml:"MAX_ALLOWED_CLIENT_PACKET_DUPLICATION_COUNT"`
+	ClientMaxSetupDuplicationCount    int      `toml:"MAX_ALLOWED_CLIENT_SETUP_PACKET_DUPLICATION_COUNT"`
+	ClientMaxUploadMTU                int      `toml:"MAX_ALLOWED_CLIENT_UPLOAD_MTU"`
+	ClientMaxDownloadMTU              int      `toml:"MAX_ALLOWED_CLIENT_DOWNLOAD_MTU"`
+	ClientMaxRxTxWorkers              int      `toml:"MAX_ALLOWED_CLIENT_RX_TX_WORKERS"`
+	ClientMinPingAggressiveInterval   float64  `toml:"MIN_ALLOWED_CLIENT_PING_AGGRESSIVE_INTERVAL_SECONDS"`
+	ClientMaxPacketsPerBatch          int      `toml:"MAX_ALLOWED_CLIENT_PACKETS_PER_BATCH"`
+	ClientMaxARQWindowSize            int      `toml:"MAX_ALLOWED_CLIENT_ARQ_WINDOW_SIZE"`
+	ClientMaxARQDataNackMaxGap        int      `toml:"MAX_ALLOWED_CLIENT_ARQ_DATA_NACK_MAX_GAP"`
+	ClientMinCompressionMinSize       int      `toml:"MIN_ALLOWED_CLIENT_COMPRESSION_MIN_SIZE"`
+	ClientMinARQInitialRTOSeconds     float64  `toml:"MIN_ALLOWED_CLIENT_ARQ_INITIAL_RTO_SECONDS"`
 }
 
 type ServerConfigOverrides struct {
@@ -164,6 +175,17 @@ func defaultServerConfig() ServerConfig {
 		ARQDataNackRepeatSeconds:          1.0,
 		ARQTerminalDrainTimeoutSec:        90.0,
 		ARQTerminalAckWaitTimeoutSec:      60.0,
+		ClientMaxPacketDuplicationCount:   5,
+		ClientMaxSetupDuplicationCount:    6,
+		ClientMaxUploadMTU:                150,
+		ClientMaxDownloadMTU:              4000,
+		ClientMaxRxTxWorkers:              255,
+		ClientMinPingAggressiveInterval:   0.05,
+		ClientMaxPacketsPerBatch:          10,
+		ClientMaxARQWindowSize:            8000,
+		ClientMaxARQDataNackMaxGap:        128,
+		ClientMinCompressionMinSize:       120,
+		ClientMinARQInitialRTOSeconds:     0.05,
 	}
 }
 
@@ -388,6 +410,17 @@ func finalizeServerConfig(cfg ServerConfig) (ServerConfig, error) {
 	cfg.ARQDataNackRepeatSeconds = clampFloat(defaultFloatAtMostZero(cfg.ARQDataNackRepeatSeconds, 2.0), 0.2, 30.0)
 	cfg.ARQTerminalDrainTimeoutSec = clampFloat(defaultFloatAtMostZero(cfg.ARQTerminalDrainTimeoutSec, 90.0), 10.0, 3600.0)
 	cfg.ARQTerminalAckWaitTimeoutSec = clampFloat(defaultFloatAtMostZero(cfg.ARQTerminalAckWaitTimeoutSec, 60.0), 5.0, 3600.0)
+	cfg.ClientMaxPacketDuplicationCount = clampInt(defaultIntBelow(cfg.ClientMaxPacketDuplicationCount, 0, defaultServerConfig().ClientMaxPacketDuplicationCount), 0, min(15, int(^uint8(0))))
+	cfg.ClientMaxSetupDuplicationCount = clampInt(defaultIntBelow(cfg.ClientMaxSetupDuplicationCount, 0, defaultServerConfig().ClientMaxSetupDuplicationCount), 0, min(15, int(^uint8(0))))
+	cfg.ClientMaxUploadMTU = clampInt(defaultIntBelow(cfg.ClientMaxUploadMTU, 1, defaultServerConfig().ClientMaxUploadMTU), 1, int(^uint8(0)))
+	cfg.ClientMaxDownloadMTU = clampInt(defaultIntBelow(cfg.ClientMaxDownloadMTU, 1, defaultServerConfig().ClientMaxDownloadMTU), 1, int(^uint16(0)))
+	cfg.ClientMaxRxTxWorkers = clampInt(defaultIntBelow(cfg.ClientMaxRxTxWorkers, 1, defaultServerConfig().ClientMaxRxTxWorkers), 1, int(^uint8(0)))
+	cfg.ClientMinPingAggressiveInterval = clampFloat(defaultFloatAtMostZero(cfg.ClientMinPingAggressiveInterval, defaultServerConfig().ClientMinPingAggressiveInterval), 0.05, 1.0)
+	cfg.ClientMaxPacketsPerBatch = clampInt(defaultIntBelow(cfg.ClientMaxPacketsPerBatch, 1, defaultServerConfig().ClientMaxPacketsPerBatch), 1, int(^uint8(0)))
+	cfg.ClientMaxARQWindowSize = clampInt(defaultIntBelow(cfg.ClientMaxARQWindowSize, 1, defaultServerConfig().ClientMaxARQWindowSize), 1, min(8000, int(^uint16(0))))
+	cfg.ClientMaxARQDataNackMaxGap = clampInt(defaultIntBelow(cfg.ClientMaxARQDataNackMaxGap, 0, defaultServerConfig().ClientMaxARQDataNackMaxGap), 0, min(255, int(^uint8(0))))
+	cfg.ClientMinCompressionMinSize = clampInt(defaultIntBelow(cfg.ClientMinCompressionMinSize, 1, defaultServerConfig().ClientMinCompressionMinSize), 1, int(^uint16(0)))
+	cfg.ClientMinARQInitialRTOSeconds = clampFloat(defaultFloatAtMostZero(cfg.ClientMinARQInitialRTOSeconds, defaultServerConfig().ClientMinARQInitialRTOSeconds), 0.05, 1.0)
 
 	return cfg, nil
 }
