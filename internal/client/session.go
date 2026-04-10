@@ -278,17 +278,20 @@ func deriveSessionPolicyTunnelProcessWorkers(current int, rxWorkers int) int {
 	}
 
 	recommended := max(4, rxWorkers+1)
-	if recommended > 128 {
-		recommended = 128
+	if recommended > 256 {
+		recommended = 256
 	}
+
 	if current < recommended {
 		current = recommended
 	}
+
 	if current < rxWorkers {
 		return rxWorkers
 	}
-	if current > 128 {
-		return 128
+
+	if current > 256 {
+		return 256
 	}
 	return current
 }

@@ -182,3 +182,67 @@ func TestApplySessionInitPacketAcceptsLegacySessionAcceptPayload(t *testing.T) {
 		t.Fatal("expected legacy session accept to mark session ready")
 	}
 }
+
+func TestApplySessionInitPacketPreservesHigherTunnelProcessWorkers(t *testing.T) {
+	cfg := config.ClientConfig{
+		PacketDuplicationCount:        8,
+		SetupPacketDuplicationCount:   9,
+		MaxUploadMTU:                  220,
+		MaxDownloadMTU:                6000,
+		RX_TX_Workers:                 16,
+		TunnelProcessWorkers:          200,
+		PingAggressiveIntervalSeconds: 0.02,
+		MaxPacketsPerBatch:            30,
+		ARQWindowSize:                 12000,
+		ARQDataNackMaxGap:             300,
+		CompressionMinSize:            40,
+		ARQInitialRTOSeconds:          0.02,
+		ARQControlInitialRTOSeconds:   0.02,
+		ARQMaxRTOSeconds:              5.0,
+		ARQControlMaxRTOSeconds:       3.0,
+	}
+	c := buildTestClientWithResolvers(cfg, "a")
+	c.tunnelRX_TX_Workers = 16
+	c.tunnelProcessWorkers = 200
+
+	verifyCode := [4]byte{1, 2, 3, 4}
+	var payload [VpnProto.SessionAcceptPayloadSize]byte
+	payload[0] = 9
+	payload[1] = 8
+	payload[2] = compression.PackPair(compression.TypeOff, compression.TypeOff)
+	copy(payload[3:7], verifyCode[:])
+
+	policy := VpnProto.EncodeSessionAcceptClientPolicy(VpnProto.SessionAcceptClientPolicy{
+		MaxPacketDuplicationCount: 5,
+		MaxSetupDuplicationCount:  6,
+		MaxUploadMTU:              150,
+		MaxDownloadMTU:            4000,
+		MaxRxTxWorkers:            4,
+		MinPingAggressiveInterval: 0.05,
+		MaxPacketsPerBatch:        10,
+		MaxARQWindowSize:          8000,
+		MaxARQDataNackMaxGap:      128,
+		MinCompressionMinSize:     120,
+		MinARQInitialRTOSeconds:   0.05,
+	})
+	copy(payload[VpnProto.SessionAcceptBasePayloadSize:], policy[:])
+
+	packet := VpnProto.Packet{
+		PacketType: Enums.PACKET_SESSION_ACCEPT,
+		Payload:    payload[:],
+	}
+
+	initPayload := make([]byte, sessionInitPayloadSize)
+	initPayload[0] = 1
+
+	if err := c.applySessionInitPacket(packet, initPayload, verifyCode); err != nil {
+		t.Fatalf("applySessionInitPacket returned error: %v", err)
+	}
+
+	if c.cfg.RX_TX_Workers != 4 || c.tunnelRX_TX_Workers != 4 {
+		t.Fatalf("unexpected worker clamp: cfg=%d runtime=%d", c.cfg.RX_TX_Workers, c.tunnelRX_TX_Workers)
+	}
+	if c.cfg.TunnelProcessWorkers != 200 || c.tunnelProcessWorkers != 200 {
+		t.Fatalf("higher process workers should be preserved: cfg=%d runtime=%d", c.cfg.TunnelProcessWorkers, c.tunnelProcessWorkers)
+	}
+}
