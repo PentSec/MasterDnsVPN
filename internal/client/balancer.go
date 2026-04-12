@@ -103,6 +103,7 @@ type Balancer struct {
 
 	autoDisableEnabled       bool
 	autoDisableTimeoutWindow time.Duration
+	onResolverDisabled       func(*Connection, string)
 }
 
 type connectionStats struct {
@@ -159,6 +160,15 @@ func (b *Balancer) SetAutoDisableConfig(enabled bool, window time.Duration) {
 	b.mu.Lock()
 	b.autoDisableEnabled = enabled
 	b.autoDisableTimeoutWindow = window
+	b.mu.Unlock()
+}
+
+func (b *Balancer) SetResolverDisabledHandler(handler func(*Connection, string)) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.onResolverDisabled = handler
 	b.mu.Unlock()
 }
 
@@ -235,7 +245,7 @@ func (b *Balancer) GetConnectionByKey(key string) (Connection, bool) {
 }
 
 func (b *Balancer) SetConnectionValidity(key string, valid bool) bool {
-	return b.SetConnectionValidityWithLog(key, valid, true)
+	return b.SetConnectionValidityWithLog(key, valid, false)
 }
 
 func (b *Balancer) SetConnectionValidityWithLog(key string, valid bool, logReactivated bool) bool {
@@ -307,14 +317,11 @@ func (b *Balancer) ApplyMTUProbeResult(key string, uploadBytes int, uploadChars 
 	} else {
 		b.clearPreferredResolverReferencesLocked(key)
 	}
+
 	if wasValid != active {
 		b.moveConnectionStateLocked(idx, active)
-
-		if b.log != nil && active {
-			b.log.Infof("<green>\U0001F504 DNS Resolver Reactivated (Health Check): <cyan>%s</cyan> <cyan>%s</cyan>) | <cyan>%s</cyan> | Total Active: <cyan>%d</cyan></green>",
-				conn.ResolverLabel, conn.Domain, conn.Resolver, len(b.activeIDs))
-		}
 	}
+
 	return true
 }
 
@@ -380,6 +387,11 @@ func (b *Balancer) ReportTimeout(serverKey string, now time.Time, window time.Du
 
 	if idx, ok := b.indexByKey[serverKey]; ok {
 		b.moveConnectionStateLocked(idx, false)
+	}
+
+	if b.onResolverDisabled != nil {
+		handler := b.onResolverDisabled
+		handler(conn, "TIMEOUT")
 	}
 
 	if b.log != nil {
@@ -1060,6 +1072,7 @@ func (b *Balancer) moveConnectionStateLocked(idx int, valid bool) {
 		b.addActiveIndexLocked(idx)
 		return
 	}
+
 	b.removeActiveIndexLocked(idx)
 	b.addInactiveIndexLocked(idx)
 }

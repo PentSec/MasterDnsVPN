@@ -108,10 +108,8 @@ func (c *Client) RunInitialMTUTests(ctx context.Context) error {
 	} else {
 		jobs := make(chan int, len(scanConnections))
 		var wg sync.WaitGroup
-		for i := 0; i < workerCount; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range workerCount {
+			wg.Go(func() {
 				for idx := range jobs {
 					if err := ctx.Err(); err != nil {
 						return
@@ -119,8 +117,9 @@ func (c *Client) RunInitialMTUTests(ctx context.Context) error {
 					conn := scanConnections[idx]
 					c.runConnectionMTUTest(ctx, conn, idx+1, len(scanConnections), uploadCaps[conn.Domain], counters)
 				}
-			}()
+			})
 		}
+
 		for idx := range scanConnections {
 			select {
 			case <-ctx.Done():
@@ -376,6 +375,10 @@ func (c *Client) collectInactiveResolverHealthChecks(recheckInterval time.Durati
 }
 
 func (c *Client) recheckInactiveResolver(ctx context.Context, conn Connection) {
+	if c == nil || c.balancer == nil || conn.Key == "" {
+		return
+	}
+
 	transport, err := newUDPQueryTransport(conn.ResolverLabel)
 	if err != nil {
 		return
@@ -389,7 +392,28 @@ func (c *Client) recheckInactiveResolver(ctx context.Context, conn Connection) {
 		return
 	}
 
-	c.reactivateRecheckedResolver(conn)
+	conn.UploadMTUBytes = c.syncedUploadMTU
+	conn.UploadMTUChars = c.encodedCharsForPayload(c.syncedUploadMTU)
+	conn.DownloadMTUBytes = c.syncedDownloadMTU
+
+	if !c.balancer.SetConnectionMTU(
+		conn.Key,
+		conn.UploadMTUBytes,
+		conn.UploadMTUChars,
+		conn.DownloadMTUBytes,
+	) {
+		return
+	}
+
+	if !c.balancer.SetConnectionValidityWithLog(conn.Key, true, true) {
+		return
+	}
+
+	c.balancer.SeedConservativeStats(conn.Key)
+
+	conn.IsValid = true
+
+	c.appendMTUAddedServerLine(&conn)
 }
 
 func (c *Client) recheckResolverUploadMTU(ctx context.Context, conn Connection, transport *udpQueryTransport) bool {
@@ -415,10 +439,12 @@ func (c *Client) recheckResolverDownloadMTU(ctx context.Context, conn Connection
 		if ctx.Err() != nil {
 			return false
 		}
+
 		passed, _, err := c.sendDownloadMTUProbe(ctx, conn, transport, c.syncedDownloadMTU, c.syncedUploadMTU, timeout, mtuProbeOptions{
 			Quiet:   true,
 			IsRetry: attempt > 0,
 		})
+
 		if err == nil && passed {
 			return true
 		}
@@ -466,38 +492,6 @@ func (c *Client) resolverHealthProbeTimeout() time.Duration {
 	return timeout
 }
 
-func (c *Client) reactivateRecheckedResolver(conn Connection) {
-	conn.UploadMTUBytes = c.syncedUploadMTU
-	conn.UploadMTUChars = c.encodedCharsForPayload(c.syncedUploadMTU)
-	conn.DownloadMTUBytes = c.syncedDownloadMTU
-	c.reactivateResolverConnection(conn)
-}
-
-func (c *Client) reactivateResolverConnection(conn Connection) bool {
-	if c == nil || c.balancer == nil || conn.Key == "" {
-		return false
-	}
-
-	if !c.balancer.SetConnectionMTU(
-		conn.Key,
-		conn.UploadMTUBytes,
-		conn.UploadMTUChars,
-		conn.DownloadMTUBytes,
-	) {
-		return false
-	}
-
-	if !c.balancer.SetConnectionValidityWithLog(conn.Key, true, false) {
-		return false
-	}
-	c.balancer.SeedConservativeStats(conn.Key)
-
-	conn.IsValid = true
-
-	c.appendMTUAddedServerLine(&conn)
-	return true
-}
-
 func (c *Client) runConnectionMTUTest(ctx context.Context, conn Connection, serverID int, total int, maxUploadPayload int, counters *mtuScanCounters) {
 	if conn.Key == "" {
 		return
@@ -505,7 +499,6 @@ func (c *Client) runConnectionMTUTest(ctx context.Context, conn Connection, serv
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			c.applyMTUDecision(conn.Key, mtuDecision{})
-			c.appendMTURemovedServerLine(&conn, "PANIC")
 			if c.log != nil {
 				c.log.Errorf(
 					"💥 <red>MTU Probe Worker Panic: <cyan>%v</cyan> (Resolver: <cyan>%s</cyan>)</red>",
@@ -513,6 +506,7 @@ func (c *Client) runConnectionMTUTest(ctx context.Context, conn Connection, serv
 					conn.ResolverLabel,
 				)
 			}
+
 			if counters != nil {
 				completed := counters.completed.Add(1)
 				rejectedNow := counters.rejectUpload.Add(1) + counters.rejectDownload.Load()
@@ -545,12 +539,12 @@ func (c *Client) runConnectionMTUTest(ctx context.Context, conn Connection, serv
 	if counters == nil {
 		return
 	}
+
 	decision := buildMTUDecision(result, reason)
 	c.applyMTUDecision(conn.Key, decision)
 
 	switch reason {
 	case mtuRejectUpload:
-		c.appendMTURemovedServerLine(&conn, "UPLOAD_MTU")
 		completed := counters.completed.Add(1)
 		rejectedNow := counters.rejectUpload.Add(1) + counters.rejectDownload.Load()
 		if c.log != nil && c.log.Enabled(logger.LevelWarn) {
@@ -567,7 +561,6 @@ func (c *Client) runConnectionMTUTest(ctx context.Context, conn Connection, serv
 		}
 		return
 	case mtuRejectDownload:
-		c.appendMTURemovedServerLine(&conn, "DOWNLOAD_MTU")
 		completed := counters.completed.Add(1)
 		rejectedNow := counters.rejectUpload.Load() + counters.rejectDownload.Add(1)
 		if c.log != nil && c.log.Enabled(logger.LevelWarn) {
@@ -621,6 +614,7 @@ func (c *Client) probeConnectionMTU(ctx context.Context, conn Connection, maxUpl
 		result.UploadChars = upChars
 		return result, mtuRejectUpload
 	}
+
 	result.UploadBytes = upBytes
 	result.UploadChars = upChars
 
@@ -629,6 +623,7 @@ func (c *Client) probeConnectionMTU(ctx context.Context, conn Connection, maxUpl
 		result.DownloadBytes = downBytes
 		return result, mtuRejectDownload
 	}
+
 	result.DownloadBytes = downBytes
 	result.ResolveTime = averageMTUProbeRTT(upRTT, downRTT)
 	return result, mtuRejectNone
@@ -720,6 +715,7 @@ func (c *Client) testDownloadMTU(ctx context.Context, conn Connection, probeTran
 	if c.log != nil && c.log.Enabled(logger.LevelDebug) {
 		c.log.Debugf("<cyan>[MTU]</cyan> Testing download MTU for %s", conn.Domain)
 	}
+
 	best, bestRTT := c.binarySearchMTU(
 		ctx,
 		"download mtu",
@@ -731,9 +727,11 @@ func (c *Client) testDownloadMTU(ctx context.Context, conn Connection, probeTran
 			})
 		},
 	)
+
 	if best < max(defaultMTUMinFloor, c.cfg.MinDownloadMTU) {
 		return false, 0, 0, nil
 	}
+
 	return true, best, bestRTT, nil
 }
 
@@ -947,9 +945,11 @@ func (c *Client) sendDownloadMTUProbe(ctx context.Context, conn Connection, prob
 	if mtuSize < defaultMTUMinFloor {
 		return false, 0, nil
 	}
+
 	if err := ctx.Err(); err != nil {
 		return false, 0, err
 	}
+
 	c.logMTUProbe(
 		options.IsRetry,
 		options.Quiet,
@@ -962,11 +962,13 @@ func (c *Client) sendDownloadMTUProbe(ctx context.Context, conn Connection, prob
 	if effectiveDownloadSize < defaultMTUMinFloor {
 		return false, 0, nil
 	}
+
 	requestLen := max(1+mtuProbeCodeLength+2, uploadMTU)
 	payload, code, useBase64, err := c.buildMTUProbePayload(requestLen)
 	if err != nil {
 		return false, 0, err
 	}
+
 	binary.BigEndian.PutUint16(payload[1+mtuProbeCodeLength:1+mtuProbeCodeLength+2], uint16(effectiveDownloadSize))
 
 	query, err := c.buildMTUProbeQuery(conn.Domain, Enums.PACKET_MTU_DOWN_REQ, payload)
@@ -987,6 +989,7 @@ func (c *Client) sendDownloadMTUProbe(ctx context.Context, conn Connection, prob
 		)
 		return false, 0, nil
 	}
+
 	rtt := time.Since(startedAt)
 
 	packet, err := DnsParser.ExtractVPNResponse(response, useBase64)
@@ -1013,6 +1016,7 @@ func (c *Client) sendDownloadMTUProbe(ctx context.Context, conn Connection, prob
 		)
 		return false, 0, nil
 	}
+
 	if len(packet.Payload) != effectiveDownloadSize {
 		c.logMTUProbe(
 			options.IsRetry,
@@ -1024,6 +1028,7 @@ func (c *Client) sendDownloadMTUProbe(ctx context.Context, conn Connection, prob
 		)
 		return false, 0, nil
 	}
+
 	if len(packet.Payload) < 1+mtuProbeCodeLength+1 {
 		c.logMTUProbe(
 			options.IsRetry,
@@ -1035,6 +1040,7 @@ func (c *Client) sendDownloadMTUProbe(ctx context.Context, conn Connection, prob
 		)
 		return false, 0, nil
 	}
+
 	if binary.BigEndian.Uint32(packet.Payload[:mtuProbeCodeLength]) != code {
 		c.logMTUProbe(
 			options.IsRetry,
@@ -1046,6 +1052,7 @@ func (c *Client) sendDownloadMTUProbe(ctx context.Context, conn Connection, prob
 		)
 		return false, 0, nil
 	}
+
 	ok := int(binary.BigEndian.Uint16(packet.Payload[mtuProbeCodeLength:mtuProbeCodeLength+2])) == effectiveDownloadSize
 	if ok {
 		c.logMTUProbe(

@@ -374,6 +374,7 @@ func (c *Client) appendMTURemovedServerLine(conn *Connection, cause string) {
 	if c == nil || c.mtuRemovedServerLogFormat == "" {
 		return
 	}
+
 	c.appendMTULogLine(c.mtuRemovedServerLogFormat, conn, cause)
 }
 
